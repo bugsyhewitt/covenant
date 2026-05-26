@@ -30,13 +30,19 @@ class BaseSCMClient:
     def _headers(self) -> dict[str, str]:
         raise NotImplementedError
 
-    def _get(self, path: str, params: dict | None = None) -> httpx.Response:
+    def _get(
+        self,
+        path: str,
+        params: dict | None = None,
+        extra_headers: dict | None = None,
+    ) -> httpx.Response:
         url = f"{self.base_url}{path}"
+        headers = {**self._headers(), **(extra_headers or {})}
         try:
             resp = httpx.get(
                 url,
                 params=params,
-                headers=self._headers(),
+                headers=headers,
                 timeout=self._timeout,
             )
         except httpx.HTTPError as exc:  # network-level failure
@@ -48,3 +54,21 @@ class BaseSCMClient:
                 f"{self.base_url} returned HTTP {resp.status_code} for {path}"
             )
         return resp
+
+    # ------------------------------------------------------------------
+    # recon_code_with_fragments — override in subclasses that support it
+    # ------------------------------------------------------------------
+
+    def recon_code_with_fragments(self, query: str) -> list[dict]:
+        """Like :meth:`recon_code` but each result also carries a
+        ``"fragments"`` key (list of text snippets) that the caller can feed
+        to :func:`covenant.secrets.scan_fragments`.
+
+        Default implementation: call :meth:`recon_code` and attach an empty
+        ``"fragments"`` list.  Subclasses that can cheaply retrieve snippet
+        text from the same API response override this.
+        """
+        results = self.recon_code(query)
+        for r in results:
+            r.setdefault("fragments", [])
+        return results

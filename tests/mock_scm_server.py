@@ -38,22 +38,33 @@ def _github_search_repos(query: str) -> dict:
     }
 
 
-def _github_search_code(query: str) -> dict:
+def _github_search_code(query: str, text_match: bool = False) -> dict:
+    item: dict = {
+        "name": f"{query}.py",
+        "path": f"src/{query}.py",
+        "repository": {
+            "name": f"{query}-book",
+            "private": False,
+            "html_url": f"https://github.com/acme/{query}-book",
+        },
+        "html_url": f"https://github.com/acme/{query}-book/blob/main/src/{query}.py",
+    }
+    if text_match:
+        # Simulate a GitHub text-match fragment containing a fake AWS key so
+        # the --scan-secrets tests have something to detect.
+        item["text_matches"] = [
+            {
+                "object_type": "FileContent",
+                "object_url": item["html_url"],
+                "property": "content",
+                "fragment": f"# {query}\nAWS_ACCESS_KEY_ID = AKIAIOSFODNN7EXAMPLE\n",
+                "matches": [{"text": "AKIAIOSFODNN7EXAMPLE", "indices": [28, 48]}],
+            }
+        ]
     return {
         "total_count": 1,
         "incomplete_results": False,
-        "items": [
-            {
-                "name": f"{query}.py",
-                "path": f"src/{query}.py",
-                "repository": {
-                    "name": f"{query}-book",
-                    "private": False,
-                    "html_url": f"https://github.com/acme/{query}-book",
-                },
-                "html_url": f"https://github.com/acme/{query}-book/blob/main/src/{query}.py",
-            }
-        ],
+        "items": [item],
     }
 
 
@@ -85,7 +96,9 @@ class _GitHubHandler(BaseHTTPRequestHandler):
             self._json(200, _github_search_repos(query))
         elif parsed.path == "/search/code":
             query = params.get("q", ["spell"])[0].split()[0]
-            self._json(200, _github_search_code(query))
+            accept = self.headers.get("Accept", "")
+            text_match = "text-match" in accept
+            self._json(200, _github_search_code(query, text_match=text_match))
         elif parsed.path == "/user":
             self._json(
                 200,
@@ -133,6 +146,28 @@ class _GitLabHandler(BaseHTTPRequestHandler):
                     }
                 ],
             )
+        elif parsed.path == "/api/v4/search":
+            scope = params.get("scope", ["blobs"])[0]
+            search = params.get("search", ["spell"])[0]
+            if scope == "blobs":
+                self._json(
+                    200,
+                    [
+                        {
+                            "basename": f"{search}",
+                            "data": f"# {search}\nAWS_ACCESS_KEY_ID = AKIAIOSFODNN7EXAMPLE\n",
+                            "filename": f"{search}.py",
+                            "id": None,
+                            "path": f"src/{search}.py",
+                            "project_id": 99,
+                            "ref": "main",
+                            "startline": 1,
+                            "web_url": f"https://gitlab.com/acme/{search}-book/-/blob/main/src/{search}.py",
+                        }
+                    ],
+                )
+            else:
+                self._json(200, [])
         elif parsed.path == "/api/v4/user":
             self._json(200, {"username": "spellcaster", "id": 4242, "is_admin": False})
         elif parsed.path == "/api/v4/personal_access_tokens/self":

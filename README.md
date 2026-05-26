@@ -73,6 +73,61 @@ Each SCM exposes the same read-only modules:
 All output is JSON on stdout. Exit codes: `0` success, `1` operational error,
 `2` target out of scope.
 
+### Client-side secret scanning (`--scan-secrets`)
+
+Pass `--scan-secrets` to `recon-code` to scan the text fragments returned by
+the SCM's code-search API for leaked credentials. Results gain a
+`"secret_findings"` array; each finding has `rule_id`, `description`,
+`secret`, `start`, `end`, and `fragment_index`.
+
+Powered by
+[necromancer-patterns](https://github.com/bugsyhewitt/necromancer-patterns) —
+the suite-wide shared credential-detection library. Rules currently cover:
+AWS access keys, Stripe secret keys, and generic high-entropy secrets.
+
+Requires the `scan` extra:
+
+```bash
+pip install -e ".[scan]"
+```
+
+Example (GitHub):
+
+```bash
+covenant github recon-code \
+  --scope-file scope.txt \
+  --query "api_key" \
+  --scan-secrets
+```
+
+Example output with a finding:
+
+```json
+{
+  "scm": "github",
+  "query": "api_key",
+  "results": [
+    {
+      "name": "config.py",
+      "path": "src/config.py",
+      "visibility": "private",
+      "url": "https://github.com/acme/infra/blob/main/src/config.py",
+      "repository": "infra",
+      "secret_findings": [
+        {
+          "rule_id": "aws-access-key-id",
+          "description": "AWS access key ID",
+          "secret": "AKIAIOSFODNN7EXAMPLE",
+          "start": 17,
+          "end": 37,
+          "fragment_index": 0
+        }
+      ]
+    }
+  ]
+}
+```
+
 ## Usage — one example per SCM
 
 GitHub repo recon:
