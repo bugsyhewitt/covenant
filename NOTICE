@@ -1,0 +1,18 @@
+covenant
+Copyright (c) 2026 bugsyhewitt
+
+This product was designed with inspiration from prior art:
+
+  SCMKit — Source Code Management Attack Toolkit
+  IBM X-Force Red (xforcered) / Brett Hawkins (h4wkst3r)
+  https://github.com/xforcered/SCMKit
+
+SCMKit is a Windows .NET adversary-simulation toolkit targeting Source Control
+Management systems (GitHub Enterprise, GitLab Enterprise, Bitbucket Server),
+organized into reconnaissance, privilege-escalation, and persistence modules.
+
+covenant is an independent, clean-room, Linux-native Python reimplementation of
+the *read-only reconnaissance and token-validation* concepts only, scoped for
+authorized bug-bounty engagements. No SCMKit source code was copied; the
+attribution above credits the original research and design that inspired this
+tool's module taxonomy.
