@@ -1,0 +1,12 @@
+# covenant scope file — authorized SCM targets for this engagement.
+# One authorized SCM URL / org / repo per line. Lines beginning with '#' are
+# comments and blank lines are ignored. covenant refuses any target whose host
+# is not listed here.
+#
+# Loopback hosts are authorized so the bundled mock SCM servers (which bind an
+# ephemeral 127.0.0.1 port) are always in scope during smoke tests.
+127.0.0.1
+localhost
+github.com
+gitlab.com
+bitbucket.org
