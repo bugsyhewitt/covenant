@@ -46,6 +46,35 @@ class GitLabClient(BaseSCMClient):
             )
         return results
 
+    def recon_code_with_fragments(self, query: str) -> list[dict]:
+        """Code search carrying matched-content fragments for secret scanning.
+
+        GitLab's blob search response includes a ``data`` field containing the
+        file content excerpt that matched the query.  We expose it as
+        ``result["fragments"]`` for the caller to feed to
+        :func:`covenant.secrets.scan_fragments`.
+        """
+        raw = self._get(
+            "/api/v4/search",
+            params={"scope": "blobs", "search": query},
+        ).json()
+        results = []
+        for item in raw:
+            # GitLab returns `data` as a string (the matched blob excerpt).
+            fragment = item.get("data", "")
+            fragments = [fragment] if fragment else []
+            results.append(
+                {
+                    "name": item.get("filename") or item.get("path"),
+                    "path": item.get("path"),
+                    "visibility": "unknown",
+                    "url": item.get("web_url") or item.get("ref"),
+                    "repository": item.get("project_id"),
+                    "fragments": fragments,
+                }
+            )
+        return results
+
     def validate_token(self) -> dict:
         user = self._get("/api/v4/user").json()
         username = user.get("username")

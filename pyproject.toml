@@ -21,7 +21,13 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0"]
+scan = [
+    "necromancer-patterns @ git+https://github.com/bugsyhewitt/necromancer-patterns",
+]
+dev = [
+    "pytest>=8.0",
+    "necromancer-patterns @ git+https://github.com/bugsyhewitt/necromancer-patterns",
+]
 
 [project.urls]
 Homepage = "https://github.com/bugsyhewitt/covenant"

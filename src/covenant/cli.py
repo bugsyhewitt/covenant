@@ -27,6 +27,11 @@ EXIT_OUT_OF_SCOPE = 2
 
 _MODULES = ("recon-repo", "recon-code", "validate-token")
 
+# Lazy import guard: secrets module requires the optional 'scan' extra.
+def _get_scan_fragments():  # noqa: ANN201
+    from .secrets import scan_fragments, SecretScanUnavailable  # noqa: PLC0415
+    return scan_fragments, SecretScanUnavailable
+
 # Default API base URLs used for scope-checking when --target-url is omitted.
 _DEFAULT_URLS = {
     "github": "https://api.github.com",
@@ -80,6 +85,16 @@ def _build_parser() -> argparse.ArgumentParser:
 
         code = mod_subs.add_parser("recon-code", help="search code across repositories")
         _add_common_args(code, needs_query=True)
+        code.add_argument(
+            "--scan-secrets",
+            action="store_true",
+            default=False,
+            help=(
+                "scan code-search result fragments for leaked credentials using "
+                "necromancer-patterns (requires 'covenant[scan]' extra); "
+                "adds 'secret_findings' to each result"
+            ),
+        )
 
         token = mod_subs.add_parser(
             "validate-token", help="enumerate what the token can access"
@@ -129,7 +144,20 @@ def main(argv: list[str] | None = None) -> int:
         if args.module == "recon-repo":
             payload = {"scm": args.scm, "query": args.query, "results": client.recon_repo(args.query)}
         elif args.module == "recon-code":
-            payload = {"scm": args.scm, "query": args.query, "results": client.recon_code(args.query)}
+            scan_secrets = getattr(args, "scan_secrets", False)
+            if scan_secrets:
+                scan_fragments, SecretScanUnavailable = _get_scan_fragments()
+                results = client.recon_code_with_fragments(args.query)
+                for result in results:
+                    fragments = result.pop("fragments", [])
+                    try:
+                        result["secret_findings"] = scan_fragments(fragments)
+                    except SecretScanUnavailable as exc:
+                        print(f"error: {exc}", file=sys.stderr)
+                        return EXIT_ERROR
+            else:
+                results = client.recon_code(args.query)
+            payload = {"scm": args.scm, "query": args.query, "results": results}
         elif args.module == "validate-token":
             payload = client.validate_token()
         else:  # pragma: no cover - argparse guarantees a valid module
