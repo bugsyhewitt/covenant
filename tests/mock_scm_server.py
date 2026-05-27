@@ -21,33 +21,40 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
 
-def _github_search_repos(query: str) -> dict:
+# Queries beginning with this prefix make every mock server emit a multi-page
+# response (TOTAL_PAGES pages, one distinct item per page) so the pagination
+# tests can prove covenant walks past page one.
+MULTIPAGE_PREFIX = "multipage"
+TOTAL_PAGES = 3
+
+
+def _github_search_repos(query: str, page: int = 1) -> dict:
     return {
         "total_count": 1,
         "incomplete_results": False,
         "items": [
             {
-                "name": f"{query}-book",
-                "full_name": f"acme/{query}-book",
+                "name": f"{query}-book-{page}",
+                "full_name": f"acme/{query}-book-{page}",
                 "private": False,
                 "visibility": "public",
-                "html_url": f"https://github.com/acme/{query}-book",
+                "html_url": f"https://github.com/acme/{query}-book-{page}",
                 "description": "A repository of spells",
             }
         ],
     }
 
 
-def _github_search_code(query: str, text_match: bool = False) -> dict:
+def _github_search_code(query: str, text_match: bool = False, page: int = 1) -> dict:
     item: dict = {
-        "name": f"{query}.py",
-        "path": f"src/{query}.py",
+        "name": f"{query}-{page}.py",
+        "path": f"src/{query}-{page}.py",
         "repository": {
             "name": f"{query}-book",
             "private": False,
             "html_url": f"https://github.com/acme/{query}-book",
         },
-        "html_url": f"https://github.com/acme/{query}-book/blob/main/src/{query}.py",
+        "html_url": f"https://github.com/acme/{query}-book/blob/main/src/{query}-{page}.py",
     }
     if text_match:
         # Simulate a GitHub text-match fragment containing a fake AWS key so
@@ -82,6 +89,20 @@ class _GitHubHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _link_header(self, path: str, params: dict, page: int) -> dict | None:
+        """Emit an RFC-5988 ``Link: <url>; rel="next"`` header for multi-page
+        queries (q starts with MULTIPAGE_PREFIX) until TOTAL_PAGES is reached.
+        """
+        query = params.get("q", ["spell"])[0]
+        if not query.startswith(MULTIPAGE_PREFIX) or page >= TOTAL_PAGES:
+            return None
+        from urllib.parse import urlencode
+
+        next_params = {k: v[0] for k, v in params.items()}
+        next_params["page"] = page + 1
+        next_url = f"http://127.0.0.1:{self.server.server_address[1]}{path}?{urlencode(next_params)}"
+        return {"Link": f'<{next_url}>; rel="next"'}
+
     def do_GET(self):  # noqa: N802 - http.server API
         parsed = urlparse(self.path)
         params = parse_qs(parsed.query)
@@ -91,14 +112,22 @@ class _GitHubHandler(BaseHTTPRequestHandler):
             self._json(401, {"message": "Requires authentication"})
             return
 
+        page = int(params.get("page", ["1"])[0])
+
         if parsed.path == "/search/repositories":
             query = params.get("q", ["spell"])[0].split()[0]
-            self._json(200, _github_search_repos(query))
+            headers = self._link_header(parsed.path, params, page)
+            self._json(200, _github_search_repos(query, page=page), headers=headers)
         elif parsed.path == "/search/code":
             query = params.get("q", ["spell"])[0].split()[0]
             accept = self.headers.get("Accept", "")
             text_match = "text-match" in accept
-            self._json(200, _github_search_code(query, text_match=text_match))
+            headers = self._link_header(parsed.path, params, page)
+            self._json(
+                200,
+                _github_search_code(query, text_match=text_match, page=page),
+                headers=headers,
+            )
         elif parsed.path == "/user":
             self._json(
                 200,
@@ -113,13 +142,27 @@ class _GitLabHandler(BaseHTTPRequestHandler):
     def log_message(self, *args):
         return
 
-    def _json(self, code: int, payload):
+    def _json(self, code: int, payload, headers: dict | None = None):
         body = json.dumps(payload).encode()
         self.send_response(code)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
+        for key, value in (headers or {}).items():
+            self.send_header(key, value)
         self.end_headers()
         self.wfile.write(body)
+
+    def _page_headers(self, search: str, page: int) -> dict:
+        """Emit GitLab offset-pagination headers. For MULTIPAGE_PREFIX queries
+        advertise a next page until TOTAL_PAGES; otherwise no next page.
+        """
+        if search.startswith(MULTIPAGE_PREFIX) and page < TOTAL_PAGES:
+            return {
+                "X-Page": str(page),
+                "X-Next-Page": str(page + 1),
+                "X-Total-Pages": str(TOTAL_PAGES),
+            }
+        return {"X-Page": str(page), "X-Next-Page": "", "X-Total-Pages": str(page)}
 
     def do_GET(self):  # noqa: N802
         parsed = urlparse(self.path)
@@ -131,6 +174,8 @@ class _GitLabHandler(BaseHTTPRequestHandler):
             self._json(401, {"message": "401 Unauthorized"})
             return
 
+        page = int(params.get("page", ["1"])[0])
+
         if parsed.path == "/api/v4/projects":
             search = params.get("search", ["spell"])[0]
             self._json(
@@ -138,13 +183,14 @@ class _GitLabHandler(BaseHTTPRequestHandler):
                 [
                     {
                         "id": 99,
-                        "name": f"{search}-book",
-                        "path_with_namespace": f"acme/{search}-book",
+                        "name": f"{search}-book-{page}",
+                        "path_with_namespace": f"acme/{search}-book-{page}",
                         "visibility": "private",
-                        "web_url": f"https://gitlab.com/acme/{search}-book",
+                        "web_url": f"https://gitlab.com/acme/{search}-book-{page}",
                         "description": "A repository of spells",
                     }
                 ],
+                headers=self._page_headers(search, page),
             )
         elif parsed.path == "/api/v4/search":
             scope = params.get("scope", ["blobs"])[0]
@@ -156,15 +202,16 @@ class _GitLabHandler(BaseHTTPRequestHandler):
                         {
                             "basename": f"{search}",
                             "data": f"# {search}\nAWS_ACCESS_KEY_ID = AKIAIOSFODNN7EXAMPLE\n",
-                            "filename": f"{search}.py",
+                            "filename": f"{search}-{page}.py",
                             "id": None,
-                            "path": f"src/{search}.py",
+                            "path": f"src/{search}-{page}.py",
                             "project_id": 99,
                             "ref": "main",
                             "startline": 1,
-                            "web_url": f"https://gitlab.com/acme/{search}-book/-/blob/main/src/{search}.py",
+                            "web_url": f"https://gitlab.com/acme/{search}-book/-/blob/main/src/{search}-{page}.py",
                         }
                     ],
+                    headers=self._page_headers(search, page),
                 )
             else:
                 self._json(200, [])
@@ -204,25 +251,34 @@ class _BitbucketHandler(BaseHTTPRequestHandler):
             term = "spell"
             if 'name~"' in query:
                 term = query.split('name~"', 1)[1].split('"', 1)[0]
-            self._json(
-                200,
-                {
-                    "values": [
-                        {
-                            "name": f"{term}-book",
-                            "full_name": f"acme/{term}-book",
-                            "is_private": True,
-                            "links": {
-                                "html": {
-                                    "href": f"https://bitbucket.org/acme/{term}-book"
-                                }
-                            },
-                            "description": "A repository of spells",
-                        }
-                    ],
-                    "size": 1,
-                },
-            )
+            page = int(params.get("page", ["1"])[0])
+            envelope = {
+                "values": [
+                    {
+                        "name": f"{term}-book-{page}",
+                        "full_name": f"acme/{term}-book-{page}",
+                        "is_private": True,
+                        "links": {
+                            "html": {
+                                "href": f"https://bitbucket.org/acme/{term}-book-{page}"
+                            }
+                        },
+                        "description": "A repository of spells",
+                    }
+                ],
+                "size": 1,
+            }
+            # For multi-page queries, advertise a `next` URL until TOTAL_PAGES.
+            if term.startswith(MULTIPAGE_PREFIX) and page < TOTAL_PAGES:
+                from urllib.parse import urlencode
+
+                next_params = {k: v[0] for k, v in params.items()}
+                next_params["page"] = page + 1
+                host = self.server.server_address[1]
+                envelope["next"] = (
+                    f"http://127.0.0.1:{host}/2.0/repositories?{urlencode(next_params)}"
+                )
+            self._json(200, envelope)
         elif parsed.path == "/2.0/user":
             self._json(200, {"username": "spellcaster", "uuid": "{abc-123}"})
         elif parsed.path == "/2.0/user/permissions/repositories":

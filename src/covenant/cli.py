@@ -18,7 +18,7 @@ import os
 import sys
 
 from .scms import CLIENTS
-from .scms.base import SCMError
+from .scms.base import DEFAULT_MAX_PAGES, HARD_MAX_PAGES, SCMError
 from .scope import Scope, ScopeError
 
 EXIT_OK = 0
@@ -61,6 +61,17 @@ def _add_common_args(parser: argparse.ArgumentParser, *, needs_query: bool) -> N
             "--query",
             required=True,
             help="search term for the recon module",
+        )
+        parser.add_argument(
+            "--max-pages",
+            type=int,
+            default=DEFAULT_MAX_PAGES,
+            help=(
+                f"maximum number of result pages to fetch "
+                f"(default: {DEFAULT_MAX_PAGES}, hard ceiling: {HARD_MAX_PAGES}). "
+                "Recon walks pages until exhausted or this limit; raising it "
+                "increases recall at the cost of more API calls."
+            ),
         )
 
 
@@ -139,15 +150,28 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_ERROR
 
+    # Clamp --max-pages to [1, HARD_MAX_PAGES]; recon modules only.
+    max_pages = getattr(args, "max_pages", DEFAULT_MAX_PAGES)
+    if max_pages < 1:
+        max_pages = 1
+    elif max_pages > HARD_MAX_PAGES:
+        max_pages = HARD_MAX_PAGES
+
     # 3. Dispatch the module.
     try:
         if args.module == "recon-repo":
-            payload = {"scm": args.scm, "query": args.query, "results": client.recon_repo(args.query)}
+            payload = {
+                "scm": args.scm,
+                "query": args.query,
+                "results": client.recon_repo(args.query, max_pages=max_pages),
+            }
         elif args.module == "recon-code":
             scan_secrets = getattr(args, "scan_secrets", False)
             if scan_secrets:
                 scan_fragments, SecretScanUnavailable = _get_scan_fragments()
-                results = client.recon_code_with_fragments(args.query)
+                results = client.recon_code_with_fragments(
+                    args.query, max_pages=max_pages
+                )
                 for result in results:
                     fragments = result.pop("fragments", [])
                     try:
@@ -156,7 +180,7 @@ def main(argv: list[str] | None = None) -> int:
                         print(f"error: {exc}", file=sys.stderr)
                         return EXIT_ERROR
             else:
-                results = client.recon_code(args.query)
+                results = client.recon_code(args.query, max_pages=max_pages)
             payload = {"scm": args.scm, "query": args.query, "results": results}
         elif args.module == "validate-token":
             payload = client.validate_token()

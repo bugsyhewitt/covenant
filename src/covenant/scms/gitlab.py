@@ -2,7 +2,35 @@
 
 from __future__ import annotations
 
-from .base import BaseSCMClient, SCMError
+import httpx
+
+from .base import DEFAULT_MAX_PAGES, BaseSCMClient, SCMError
+
+#: GitLab offset pagination page size — the API cap is 100 per page.
+_PER_PAGE = 100
+
+
+def _gitlab_next(path: str, base_params: dict):
+    """Build a ``next_request`` callback that walks GitLab offset pages.
+
+    GitLab returns the next page number in the ``X-Next-Page`` response header
+    (empty string when the current page is the last). We re-issue the same
+    ``path`` with the same query params plus an updated ``page``.
+    """
+
+    def _next(resp: httpx.Response) -> tuple[str, dict] | None:
+        next_page = (resp.headers.get("X-Next-Page") or "").strip()
+        if not next_page:
+            return None
+        try:
+            page_num = int(next_page)
+        except ValueError:
+            return None
+        if page_num <= 0:
+            return None
+        return (path, {**base_params, "page": page_num})
+
+    return _next
 
 
 class GitLabClient(BaseSCMClient):
@@ -11,42 +39,62 @@ class GitLabClient(BaseSCMClient):
     def _headers(self) -> dict[str, str]:
         return {"PRIVATE-TOKEN": self.token, "User-Agent": "covenant"}
 
-    def recon_repo(self, query: str) -> list[dict]:
-        data = self._get(
-            "/api/v4/projects",
-            params={"search": query, "membership": "true"},
-        ).json()
+    def recon_repo(self, query: str, max_pages: int = DEFAULT_MAX_PAGES) -> list[dict]:
+        path = "/api/v4/projects"
+        params = {
+            "search": query,
+            "membership": "true",
+            "per_page": _PER_PAGE,
+            "page": 1,
+        }
         results = []
-        for item in data:
-            results.append(
-                {
-                    "name": item.get("path_with_namespace") or item.get("name"),
-                    "visibility": item.get("visibility", "private"),
-                    "url": item.get("web_url"),
-                    "description": item.get("description"),
-                }
-            )
+        for resp in self._get_paginated(
+            path,
+            params=params,
+            max_pages=max_pages,
+            next_request=_gitlab_next(path, params),
+        ):
+            for item in resp.json():
+                results.append(
+                    {
+                        "name": item.get("path_with_namespace") or item.get("name"),
+                        "visibility": item.get("visibility", "private"),
+                        "url": item.get("web_url"),
+                        "description": item.get("description"),
+                    }
+                )
         return results
 
-    def recon_code(self, query: str) -> list[dict]:
-        data = self._get(
-            "/api/v4/search",
-            params={"scope": "blobs", "search": query},
-        ).json()
+    def recon_code(self, query: str, max_pages: int = DEFAULT_MAX_PAGES) -> list[dict]:
+        path = "/api/v4/search"
+        params = {
+            "scope": "blobs",
+            "search": query,
+            "per_page": _PER_PAGE,
+            "page": 1,
+        }
         results = []
-        for item in data:
-            results.append(
-                {
-                    "name": item.get("filename") or item.get("path"),
-                    "path": item.get("path"),
-                    "visibility": "unknown",
-                    "url": item.get("web_url") or item.get("ref"),
-                    "repository": item.get("project_id"),
-                }
-            )
+        for resp in self._get_paginated(
+            path,
+            params=params,
+            max_pages=max_pages,
+            next_request=_gitlab_next(path, params),
+        ):
+            for item in resp.json():
+                results.append(
+                    {
+                        "name": item.get("filename") or item.get("path"),
+                        "path": item.get("path"),
+                        "visibility": "unknown",
+                        "url": item.get("web_url") or item.get("ref"),
+                        "repository": item.get("project_id"),
+                    }
+                )
         return results
 
-    def recon_code_with_fragments(self, query: str) -> list[dict]:
+    def recon_code_with_fragments(
+        self, query: str, max_pages: int = DEFAULT_MAX_PAGES
+    ) -> list[dict]:
         """Code search carrying matched-content fragments for secret scanning.
 
         GitLab's blob search response includes a ``data`` field containing the
@@ -54,25 +102,34 @@ class GitLabClient(BaseSCMClient):
         ``result["fragments"]`` for the caller to feed to
         :func:`covenant.secrets.scan_fragments`.
         """
-        raw = self._get(
-            "/api/v4/search",
-            params={"scope": "blobs", "search": query},
-        ).json()
+        path = "/api/v4/search"
+        params = {
+            "scope": "blobs",
+            "search": query,
+            "per_page": _PER_PAGE,
+            "page": 1,
+        }
         results = []
-        for item in raw:
-            # GitLab returns `data` as a string (the matched blob excerpt).
-            fragment = item.get("data", "")
-            fragments = [fragment] if fragment else []
-            results.append(
-                {
-                    "name": item.get("filename") or item.get("path"),
-                    "path": item.get("path"),
-                    "visibility": "unknown",
-                    "url": item.get("web_url") or item.get("ref"),
-                    "repository": item.get("project_id"),
-                    "fragments": fragments,
-                }
-            )
+        for resp in self._get_paginated(
+            path,
+            params=params,
+            max_pages=max_pages,
+            next_request=_gitlab_next(path, params),
+        ):
+            for item in resp.json():
+                # GitLab returns `data` as a string (the matched blob excerpt).
+                fragment = item.get("data", "")
+                fragments = [fragment] if fragment else []
+                results.append(
+                    {
+                        "name": item.get("filename") or item.get("path"),
+                        "path": item.get("path"),
+                        "visibility": "unknown",
+                        "url": item.get("web_url") or item.get("ref"),
+                        "repository": item.get("project_id"),
+                        "fragments": fragments,
+                    }
+                )
         return results
 
     def validate_token(self) -> dict:

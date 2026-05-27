@@ -128,6 +128,30 @@ Example output with a finding:
 }
 ```
 
+### Result pagination (`--max-pages`)
+
+`recon-repo` and `recon-code` walk **all** result pages, not just the first.
+Each SCM's pagination contract is followed automatically — GitHub's RFC-5988
+`Link` header, GitLab's `X-Next-Page` header, and Bitbucket's `next` envelope
+key. Without page-walking an operator could query a target, see a handful of
+hits on page one, and wrongly conclude the target is clean when hundreds of
+matches exist on later pages.
+
+The walk is bounded by `--max-pages` (default `10`, hard ceiling `100` to
+respect GitHub's documented ~100-page search cap). Raise it for fuller recall
+at the cost of more API calls; lower it (e.g. `--max-pages 1`) to fetch only
+the first page:
+
+```bash
+# Walk up to 50 pages of code-search results
+covenant github recon-code \
+  --scope-file scope.txt \
+  --query "internal_api" \
+  --max-pages 50
+```
+
+The JSON output shape is unchanged — `results` is simply a longer flat array.
+
 ## Usage — one example per SCM
 
 GitHub repo recon:

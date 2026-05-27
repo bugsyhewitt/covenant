@@ -23,7 +23,24 @@ breaks the v0.1 read-only contract or the scope guardrail.
 
 ---
 
-## Item 1 — Paginate recon-repo and recon-code results (Priority: CRITICAL)
+## Item 1 — Paginate recon-repo and recon-code results (Priority: CRITICAL) — ✅ IMPLEMENTED (Phase 2, Rotation 3)
+
+> **Status: shipped.** A shared `BaseSCMClient._get_paginated()` helper now walks
+> paginated GET responses, bounded by a `--max-pages` CLI flag (default 10, hard
+> ceiling 100). Each client supplies a `next_request` callback for its own
+> pagination contract: GitHub follows the RFC-5988 `Link: ...; rel="next"` header,
+> GitLab honors `X-Next-Page` (offset pagination with `per_page=100&page=N`), and
+> Bitbucket follows the `next` URL key in the `{"values": [...], "next": ...}`
+> envelope. `recon_repo`, `recon_code`, and `recon_code_with_fragments` across all
+> three clients now thread `max_pages` through and accumulate results across pages.
+> The JSON output shape is unchanged — the flat `results` array is simply longer.
+> Mock servers emit multi-page fixtures for any query prefixed `multipage`; tests
+> in `tests/test_pagination.py` prove (a) GitHub Link-header walking, (b) GitLab
+> `X-Next-Page` walking, (c) Bitbucket `next`-key walking, (d) `--max-pages 1`/`2`
+> capping, (e) single-page responses stopping after one page, and ceiling clamping.
+> Full suite: 37 tests passing (25 baseline + 12 new), zero regressions.
+
+
 
 ### What
 Every recon module currently issues exactly one `_get(...)` and returns only that first
