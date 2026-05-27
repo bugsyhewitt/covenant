@@ -334,3 +334,144 @@ def test_gitlab_recon_code_scan_secrets(gitlab_mock, scope_file):
     assert any(f["rule_id"] == "aws-access-key-id" for f in findings), (
         f"expected aws-access-key-id finding in GitLab result; got: {findings}"
     )
+
+
+# --- --scan-secrets: Bitbucket code search with content_matches fragments ----
+
+
+def test_bitbucket_recon_code_success(bitbucket_mock, scope_file):
+    """Bitbucket recon-code returns real code results (path/name), not repos."""
+    proc = _run(
+        [
+            "bitbucket",
+            "recon-code",
+            "--scope-file",
+            scope_file,
+            "--query",
+            "spell",
+            "--token-env",
+            "COVENANT_TOKEN",
+            "--target-url",
+            bitbucket_mock.base_url,
+            "--workspace",
+            "acme",
+        ]
+    )
+    assert proc.returncode == 0, proc.stderr
+    payload = json.loads(proc.stdout)
+    assert payload["results"], "expected at least one code result"
+    first = payload["results"][0]
+    # Should be a code result: has a path, not a repo name with visibility
+    assert "path" in first, f"expected path key in code result: {first}"
+    assert first["path"], "path should be non-empty"
+    assert first["name"], "name should be non-empty (basename of path)"
+    # Must NOT look like a repo result (recon_repo returns 'visibility')
+    assert first.get("path") != first.get("name") or "/" in first.get("path", ""), (
+        "code result path should contain a directory separator"
+    )
+
+
+def test_bitbucket_recon_code_no_workspace_errors(bitbucket_mock, scope_file):
+    """recon-code without --workspace exits with an error, not silent fallback."""
+    proc = _run(
+        [
+            "bitbucket",
+            "recon-code",
+            "--scope-file",
+            scope_file,
+            "--query",
+            "spell",
+            "--token-env",
+            "COVENANT_TOKEN",
+            "--target-url",
+            bitbucket_mock.base_url,
+        ]
+    )
+    assert proc.returncode != 0
+    assert "workspace" in proc.stderr.lower(), (
+        f"expected 'workspace' in error message; got: {proc.stderr!r}"
+    )
+
+
+def test_bitbucket_recon_code_scan_secrets(bitbucket_mock, scope_file):
+    """Bitbucket --scan-secrets uses content_matches fragments."""
+    proc = _run(
+        [
+            "bitbucket",
+            "recon-code",
+            "--scope-file",
+            scope_file,
+            "--query",
+            "spell",
+            "--token-env",
+            "COVENANT_TOKEN",
+            "--target-url",
+            bitbucket_mock.base_url,
+            "--workspace",
+            "acme",
+            "--scan-secrets",
+        ]
+    )
+    assert proc.returncode == 0, proc.stderr
+    payload = json.loads(proc.stdout)
+    assert payload["results"], "expected at least one code result"
+    first = payload["results"][0]
+    assert "secret_findings" in first, "expected secret_findings key"
+    findings = first["secret_findings"]
+    assert isinstance(findings, list)
+    assert any(f["rule_id"] == "aws-access-key-id" for f in findings), (
+        f"expected aws-access-key-id finding in Bitbucket result; got: {findings}"
+    )
+
+
+def test_bitbucket_recon_code_scan_secrets_finding_shape(bitbucket_mock, scope_file):
+    """Each Bitbucket secret finding has the expected keys."""
+    proc = _run(
+        [
+            "bitbucket",
+            "recon-code",
+            "--scope-file",
+            scope_file,
+            "--query",
+            "spell",
+            "--token-env",
+            "COVENANT_TOKEN",
+            "--target-url",
+            bitbucket_mock.base_url,
+            "--workspace",
+            "acme",
+            "--scan-secrets",
+        ]
+    )
+    assert proc.returncode == 0, proc.stderr
+    findings = json.loads(proc.stdout)["results"][0]["secret_findings"]
+    assert findings, "expected at least one finding"
+    for f in findings:
+        for key in ("rule_id", "description", "secret", "start", "end", "fragment_index"):
+            assert key in f, f"finding missing key {key!r}: {f}"
+
+
+def test_bitbucket_recon_code_no_scan_secrets_no_findings_key(bitbucket_mock, scope_file):
+    """Without --scan-secrets, Bitbucket results must NOT have a secret_findings key."""
+    proc = _run(
+        [
+            "bitbucket",
+            "recon-code",
+            "--scope-file",
+            scope_file,
+            "--query",
+            "spell",
+            "--token-env",
+            "COVENANT_TOKEN",
+            "--target-url",
+            bitbucket_mock.base_url,
+            "--workspace",
+            "acme",
+        ]
+    )
+    assert proc.returncode == 0, proc.stderr
+    payload = json.loads(proc.stdout)
+    first = payload["results"][0]
+    assert "secret_findings" not in first, (
+        "secret_findings should only appear when --scan-secrets is passed"
+    )

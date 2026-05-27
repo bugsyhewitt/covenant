@@ -106,6 +106,16 @@ def _build_parser() -> argparse.ArgumentParser:
                 "adds 'secret_findings' to each result"
             ),
         )
+        if scm == "bitbucket":
+            code.add_argument(
+                "--workspace",
+                default=None,
+                metavar="WORKSPACE",
+                help=(
+                    "Bitbucket workspace slug (required for recon-code; "
+                    "e.g. the slug from bitbucket.org/<workspace>/...)"
+                ),
+            )
 
         token = mod_subs.add_parser(
             "validate-token", help="enumerate what the token can access"
@@ -167,10 +177,15 @@ def main(argv: list[str] | None = None) -> int:
             }
         elif args.module == "recon-code":
             scan_secrets = getattr(args, "scan_secrets", False)
+            # Bitbucket code search is workspace-scoped; surface the workspace
+            # kwarg only when talking to Bitbucket so other clients are unchanged.
+            code_kwargs: dict = {"max_pages": max_pages}
+            if args.scm == "bitbucket":
+                code_kwargs["workspace"] = getattr(args, "workspace", None)
             if scan_secrets:
                 scan_fragments, SecretScanUnavailable = _get_scan_fragments()
                 results = client.recon_code_with_fragments(
-                    args.query, max_pages=max_pages
+                    args.query, **code_kwargs
                 )
                 for result in results:
                     fragments = result.pop("fragments", [])
@@ -180,7 +195,7 @@ def main(argv: list[str] | None = None) -> int:
                         print(f"error: {exc}", file=sys.stderr)
                         return EXIT_ERROR
             else:
-                results = client.recon_code(args.query, max_pages=max_pages)
+                results = client.recon_code(args.query, **code_kwargs)
             payload = {"scm": args.scm, "query": args.query, "results": results}
         elif args.module == "validate-token":
             payload = client.validate_token()

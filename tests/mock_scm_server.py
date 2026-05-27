@@ -226,6 +226,49 @@ class _GitLabHandler(BaseHTTPRequestHandler):
             self._json(404, {"message": "404 Not Found"})
 
 
+def _bitbucket_search_code(query: str, page: int = 1) -> dict:
+    """Simulate a Bitbucket Cloud /2.0/workspaces/{ws}/search/code response.
+
+    Injects a fake AWS key inside ``content_matches`` so ``--scan-secrets``
+    tests have a real fragment to detect.
+    """
+    return {
+        "values": [
+            {
+                "type": "code_search_result",
+                "file": {
+                    "path": f"src/{query}-{page}.py",
+                    "commit": {
+                        "repository": {
+                            "full_name": f"acme/{query}-book",
+                        }
+                    },
+                },
+                "path_matches": [],
+                "content_matches": [
+                    {
+                        "lines": [
+                            {
+                                "line": 1,
+                                "segments": [
+                                    {"text": f"# {query}\n"},
+                                ],
+                            },
+                            {
+                                "line": 2,
+                                "segments": [
+                                    {"text": "AWS_ACCESS_KEY_ID = AKIAIOSFODNN7EXAMPLE\n"},
+                                ],
+                            },
+                        ]
+                    }
+                ],
+            }
+        ],
+        "size": 1,
+    }
+
+
 class _BitbucketHandler(BaseHTTPRequestHandler):
     def log_message(self, *args):
         return
@@ -277,6 +320,23 @@ class _BitbucketHandler(BaseHTTPRequestHandler):
                 host = self.server.server_address[1]
                 envelope["next"] = (
                     f"http://127.0.0.1:{host}/2.0/repositories?{urlencode(next_params)}"
+                )
+            self._json(200, envelope)
+        elif parsed.path.endswith("/search/code") and "/workspaces/" in parsed.path:
+            # Workspace-scoped code search:
+            # /2.0/workspaces/{workspace}/search/code
+            term = params.get("search_query", ["spell"])[0]
+            page = int(params.get("page", ["1"])[0])
+            envelope = _bitbucket_search_code(term, page=page)
+            # Multi-page support for pagination tests.
+            if term.startswith(MULTIPAGE_PREFIX) and page < TOTAL_PAGES:
+                from urllib.parse import urlencode
+
+                next_params = {k: v[0] for k, v in params.items()}
+                next_params["page"] = page + 1
+                host = self.server.server_address[1]
+                envelope["next"] = (
+                    f"http://127.0.0.1:{host}{parsed.path}?{urlencode(next_params)}"
                 )
             self._json(200, envelope)
         elif parsed.path == "/2.0/user":

@@ -58,10 +58,106 @@ class BitbucketClient(BaseSCMClient):
                 )
         return results
 
-    def recon_code(self, query: str, max_pages: int = DEFAULT_MAX_PAGES) -> list[dict]:
-        # Bitbucket Cloud code search requires a workspace path; without one we
-        # surface repos as the closest read-only equivalent for v0.1 parity.
-        return self.recon_repo(query, max_pages=max_pages)
+    def recon_code(
+        self,
+        query: str,
+        max_pages: int = DEFAULT_MAX_PAGES,
+        workspace: str | None = None,
+    ) -> list[dict]:
+        """Search code within a Bitbucket Cloud workspace.
+
+        Uses the workspace-scoped code search endpoint::
+
+            GET /2.0/workspaces/{workspace}/search/code?search_query=...
+
+        ``workspace`` is required — Bitbucket's code search API has no
+        cross-workspace equivalent.  If it is not supplied an :class:`SCMError`
+        is raised rather than silently falling back to repo search.
+        """
+        if not workspace:
+            raise SCMError(
+                "Bitbucket code search requires a workspace; "
+                "pass --workspace <slug> (e.g. the slug from "
+                "bitbucket.org/<workspace>/...)"
+            )
+        results = []
+        for resp in self._get_paginated(
+            f"/2.0/workspaces/{workspace}/search/code",
+            params={"search_query": query, "pagelen": 100},
+            max_pages=max_pages,
+            next_request=_bitbucket_next,
+        ):
+            for item in resp.json().get("values", []):
+                file_info = item.get("file", {})
+                path = file_info.get("path", "")
+                name = path.rsplit("/", 1)[-1] if path else ""
+                # path_matches gives character-level hit positions in the path;
+                # content_matches gives the actual matching line text.
+                content_matches = item.get("content_matches", [])
+                results.append(
+                    {
+                        "name": name,
+                        "path": path,
+                        "url": None,  # Bitbucket code search doesn't return a direct URL
+                        "repository": item.get("file", {}).get("commit", {}).get(
+                            "repository", {}).get("full_name"),
+                        "content_matches": content_matches,
+                    }
+                )
+        return results
+
+    def recon_code_with_fragments(
+        self,
+        query: str,
+        max_pages: int = DEFAULT_MAX_PAGES,
+        workspace: str | None = None,
+    ) -> list[dict]:
+        """Code search with inline text fragments for client-side secret scanning.
+
+        Each result carries a ``"fragments"`` key (list of strings) built from
+        ``content_matches[].lines[].segments[].text`` so that
+        :func:`covenant.secrets.scan_fragments` has real code text to scan —
+        unlike the stub that returned empty fragments.
+        """
+        if not workspace:
+            raise SCMError(
+                "Bitbucket code search requires a workspace; "
+                "pass --workspace <slug>"
+            )
+        results = []
+        for resp in self._get_paginated(
+            f"/2.0/workspaces/{workspace}/search/code",
+            params={"search_query": query, "pagelen": 100},
+            max_pages=max_pages,
+            next_request=_bitbucket_next,
+        ):
+            for item in resp.json().get("values", []):
+                file_info = item.get("file", {})
+                path = file_info.get("path", "")
+                name = path.rsplit("/", 1)[-1] if path else ""
+                content_matches = item.get("content_matches", [])
+                # Collect text from all matching line segments as fragments.
+                fragments: list[str] = []
+                for cm in content_matches:
+                    for line in cm.get("lines", []):
+                        text = "".join(
+                            seg.get("text", "")
+                            for seg in line.get("segments", [])
+                        )
+                        if text:
+                            fragments.append(text)
+                results.append(
+                    {
+                        "name": name,
+                        "path": path,
+                        "url": None,
+                        "repository": file_info.get("commit", {}).get(
+                            "repository", {}).get("full_name"),
+                        "content_matches": content_matches,
+                        "fragments": fragments,
+                    }
+                )
+        return results
 
     def validate_token(self) -> dict:
         user = self._get("/2.0/user").json()
