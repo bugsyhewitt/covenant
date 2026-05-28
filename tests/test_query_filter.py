@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pytest
 
-from covenant.cli import build_query
+from covenant.cli import apply_org, build_query
 from covenant.secrets import (
     DEFAULT_PATTERN_SET,
     available_pattern_sets,
@@ -59,6 +59,43 @@ def test_build_query_empty_query_with_excludes():
     # Degenerate but well-defined: no base term, only qualifiers.
     out = build_query("", ["example"], "github")
     assert out == "NOT example"
+
+
+# --- apply_org (--org) -------------------------------------------------------
+
+
+def test_apply_org_none_passes_through():
+    assert apply_org("spell", None, "github") == "spell"
+    assert apply_org("spell", "", "github") == "spell"
+    assert apply_org("spell", "   ", "github") == "spell"
+
+
+def test_apply_org_github_appends_qualifier():
+    assert apply_org("spell", "acme", "github") == "spell org:acme"
+
+
+def test_apply_org_github_strips_org_whitespace():
+    assert apply_org("spell", "  acme  ", "github") == "spell org:acme"
+
+
+def test_apply_org_github_empty_query_yields_bare_qualifier():
+    assert apply_org("", "acme", "github") == "org:acme"
+
+
+def test_apply_org_composes_after_excludes():
+    # An operator applies --exclude first (build_query), then --org narrowing.
+    q = build_query("spell", ["test"], "github")
+    assert apply_org(q, "acme", "github") == "spell NOT test org:acme"
+
+
+def test_apply_org_gitlab_does_not_touch_query():
+    # GitLab narrows via a group-scoped endpoint, not an in-query qualifier.
+    assert apply_org("spell", "acme", "gitlab") == "spell"
+
+
+def test_apply_org_bitbucket_does_not_touch_query():
+    # Bitbucket narrows via --workspace; --org is not offered for it.
+    assert apply_org("spell", "acme", "bitbucket") == "spell"
 
 
 # --- pattern-set plumbing through scan_fragments -----------------------------

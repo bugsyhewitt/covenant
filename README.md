@@ -88,7 +88,10 @@ This closes a real authorization gap. Bitbucket code search is workspace-scoped
 (`recon-code --workspace <slug>`); previously, listing `bitbucket.org/acme` and
 then running `--workspace victim` would happily search the `victim` workspace,
 because only the *host* (`api.bitbucket.org`) was ever checked. Now the
-`--workspace` slug is verified against the authorized orgs for the host.
+`--workspace` slug is verified against the authorized orgs for the host. The
+GitHub/GitLab `--org` flag (see "Single-org narrowing" below) is verified the
+same way — and on an org-restricted host a recon run that names *no* org is
+refused too, so the narrowing can't be silently bypassed.
 
 ```
 # Org-restricted: only the acme workspace on bitbucket.org is authorized
@@ -310,6 +313,46 @@ covenant github recon-code \
 
 This sends `AKIA NOT example NOT test` to GitHub's code search and scans the
 results with only the AWS rule set.
+
+### Single-org narrowing (`--org`)
+
+`recon-repo` and `recon-code` on **GitHub and GitLab** accept `--org SLUG` to
+narrow a recon run to one organization (GitHub) or group (GitLab) instead of
+searching every repository the token can reach. On GitHub the slug is appended
+as an `org:<slug>` search qualifier; on GitLab covenant switches to the
+group-scoped endpoints (`/groups/<slug>/projects`, `/groups/<slug>/search`), so
+a GitLab slug may be a full group path like `acme/platform`. Bitbucket already
+has its own mandatory `--workspace` flag for the same purpose, so `--org` is not
+offered there.
+
+`--org` is not just a precision knob — it is **scope-enforced**, closing the
+same authorization gap `--workspace` already closes for Bitbucket. When the
+scope file authorizes a host only for specific orgs (an org-path entry like
+`github.com/acme-corp` with no bare-host entry), covenant now:
+
+- **refuses `--org victim`** on that host with exit code `2` (out of scope),
+  even though the host itself is listed; and
+- **refuses a run with no `--org`** on that host with exit code `2` — an
+  org-restricted host requires you to name an authorized org, because a no-org
+  recon would otherwise search the *entire* host you only partially authorized.
+
+A bare host entry (`github.com`) stays host-wide: any `--org`, or none, is
+allowed (the original v0.1 behavior, unchanged). The `query` field in the JSON
+output still echoes the query you typed, not the org-augmented one.
+
+```bash
+# GitHub: search only the acme-corp org for "api_key"
+covenant github recon-code \
+  --scope-file scope.txt \
+  --query "api_key" \
+  --org acme-corp
+
+# GitLab: search only the acme/platform group (full group path)
+covenant gitlab recon-code \
+  --scope-file scope.txt \
+  --query "api_key" \
+  --org acme/platform
+```
 
 ### Rate-limit handling (automatic retry with backoff)
 

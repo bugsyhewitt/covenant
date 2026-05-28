@@ -863,3 +863,227 @@ def test_bare_host_authorizes_any_workspace(bitbucket_mock, scope_file):
         ]
     )
     assert proc.returncode == 0, proc.stderr
+
+
+# --- --org: GitHub/GitLab single-org narrowing + scope enforcement -----------
+
+
+def test_github_recon_code_org_appends_qualifier(github_mock, scope_file):
+    """--org SLUG appends an 'org:<slug>' qualifier to the GitHub query."""
+    proc = _run(
+        [
+            "github",
+            "recon-code",
+            "--scope-file",
+            scope_file,
+            "--query",
+            "spell",
+            "--token-env",
+            "COVENANT_TOKEN",
+            "--target-url",
+            github_mock.base_url,
+            "--org",
+            "acme",
+        ]
+    )
+    assert proc.returncode == 0, proc.stderr
+    received = github_mock._server.received_queries
+    assert received and received[-1] == "spell org:acme", received
+    # The payload still echoes the operator's ORIGINAL query.
+    payload = json.loads(proc.stdout)
+    assert payload["query"] == "spell"
+
+
+def test_github_recon_code_org_composes_with_exclude(github_mock, scope_file):
+    """--exclude and --org compose: 'spell NOT test org:acme'."""
+    proc = _run(
+        [
+            "github",
+            "recon-code",
+            "--scope-file",
+            scope_file,
+            "--query",
+            "spell",
+            "--token-env",
+            "COVENANT_TOKEN",
+            "--target-url",
+            github_mock.base_url,
+            "--exclude",
+            "test",
+            "--org",
+            "acme",
+        ]
+    )
+    assert proc.returncode == 0, proc.stderr
+    received = github_mock._server.received_queries
+    assert received and received[-1] == "spell NOT test org:acme", received
+
+
+def test_gitlab_recon_code_org_uses_group_scoped_endpoint(gitlab_mock, scope_file):
+    """--org on GitLab hits /api/v4/groups/<slug>/search, query untouched."""
+    proc = _run(
+        [
+            "gitlab",
+            "recon-code",
+            "--scope-file",
+            scope_file,
+            "--query",
+            "spell",
+            "--token-env",
+            "COVENANT_TOKEN",
+            "--target-url",
+            gitlab_mock.base_url,
+            "--org",
+            "acme/platform",
+        ]
+    )
+    assert proc.returncode == 0, proc.stderr
+    # The query string is NOT augmented for GitLab (group is endpoint-scoped).
+    received = gitlab_mock._server.received_queries
+    assert received and received[-1] == "spell", received
+    # The group path reached the wire URL-encoded ('/' -> '%2F').
+    groups = gitlab_mock._server.received_groups
+    assert groups and groups[-1] == "acme%2Fplatform", groups
+
+
+def test_gitlab_recon_repo_org_uses_group_scoped_endpoint(gitlab_mock, scope_file):
+    """--org on GitLab recon-repo hits /api/v4/groups/<slug>/projects."""
+    proc = _run(
+        [
+            "gitlab",
+            "recon-repo",
+            "--scope-file",
+            scope_file,
+            "--query",
+            "spell",
+            "--token-env",
+            "COVENANT_TOKEN",
+            "--target-url",
+            gitlab_mock.base_url,
+            "--org",
+            "acme",
+        ]
+    )
+    assert proc.returncode == 0, proc.stderr
+    groups = gitlab_mock._server.received_groups
+    assert groups and groups[-1] == "acme", groups
+    payload = json.loads(proc.stdout)
+    assert payload["results"], "expected at least one repo result"
+
+
+def test_github_org_out_of_scope_refused(github_mock, tmp_path):
+    """An org-restricted GitHub host refuses --org naming a different org.
+
+    Mirrors the Bitbucket --workspace guardrail: the scope file authorizes the
+    loopback host only for 'acme', so '--org victim' must exit 2 and make no
+    network call.
+    """
+    scope = _org_scope_file(tmp_path, "127.0.0.1/acme")
+    proc = _run(
+        [
+            "github",
+            "recon-code",
+            "--scope-file",
+            scope,
+            "--query",
+            "spell",
+            "--token-env",
+            "COVENANT_TOKEN",
+            "--target-url",
+            github_mock.base_url,
+            "--org",
+            "victim",
+        ]
+    )
+    assert proc.returncode == 2, (proc.returncode, proc.stderr)
+    assert "victim" in proc.stderr
+    assert "scope" in proc.stderr.lower()
+    # The guardrail tripped before any request: no query recorded.
+    assert not getattr(github_mock._server, "received_queries", [])
+
+
+def test_github_org_in_scope_allowed(github_mock, tmp_path):
+    """The authorized org on an org-restricted GitHub host is allowed."""
+    scope = _org_scope_file(tmp_path, "127.0.0.1/acme")
+    proc = _run(
+        [
+            "github",
+            "recon-code",
+            "--scope-file",
+            scope,
+            "--query",
+            "spell",
+            "--token-env",
+            "COVENANT_TOKEN",
+            "--target-url",
+            github_mock.base_url,
+            "--org",
+            "acme",
+        ]
+    )
+    assert proc.returncode == 0, proc.stderr
+    received = github_mock._server.received_queries
+    assert received and received[-1] == "spell org:acme", received
+
+
+def test_github_org_restricted_host_requires_org(github_mock, tmp_path):
+    """On an org-restricted host, recon with NO --org is refused (exit 2).
+
+    Without this, an entry like '127.0.0.1/acme' would still let a no-org recon
+    search the entire host — the same gap --workspace closes for Bitbucket.
+    """
+    scope = _org_scope_file(tmp_path, "127.0.0.1/acme")
+    proc = _run(
+        [
+            "github",
+            "recon-code",
+            "--scope-file",
+            scope,
+            "--query",
+            "spell",
+            "--token-env",
+            "COVENANT_TOKEN",
+            "--target-url",
+            github_mock.base_url,
+        ]
+    )
+    assert proc.returncode == 2, (proc.returncode, proc.stderr)
+    assert "scope" in proc.stderr.lower()
+    assert not getattr(github_mock._server, "received_queries", [])
+
+
+def test_bare_host_authorizes_any_org(github_mock, scope_file):
+    """A bare host entry (the shared fixture) authorizes any --org and the
+    no-org default — proving backward compatibility with the v0.1 model."""
+    proc = _run(
+        [
+            "github",
+            "recon-code",
+            "--scope-file",
+            scope_file,
+            "--query",
+            "spell",
+            "--token-env",
+            "COVENANT_TOKEN",
+            "--target-url",
+            github_mock.base_url,
+            "--org",
+            "any-org-at-all",
+        ]
+    )
+    assert proc.returncode == 0, proc.stderr
+
+
+def test_org_flag_in_help_for_github_recon(github_mock):
+    """--org is documented in the GitHub recon-code help surface."""
+    proc = _run(["github", "recon-code", "--help"])
+    assert proc.returncode == 0
+    assert "--org" in proc.stdout
+
+
+def test_org_flag_absent_for_bitbucket_recon(bitbucket_mock):
+    """Bitbucket recon-code offers --workspace, not --org."""
+    proc = _run(["bitbucket", "recon-code", "--help"])
+    assert proc.returncode == 0
+    assert "--org" not in proc.stdout
+    assert "--workspace" in proc.stdout

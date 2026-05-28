@@ -97,6 +97,20 @@ def _record_query(handler, value: str) -> None:
     queries.append(value)
 
 
+def _record_group(handler, group_id: str) -> None:
+    """Stash the group ``:id`` segment from a group-scoped GitLab request.
+
+    Lets the ``--org`` tests assert recon actually hit the group-scoped
+    endpoint (``/api/v4/groups/:id/...``) rather than the host-wide one, and
+    that the group path was URL-encoded onto the wire (``acme%2Fplatform``).
+    """
+    groups = getattr(handler.server, "received_groups", None)
+    if groups is None:
+        groups = []
+        handler.server.received_groups = groups
+    groups.append(group_id)
+
+
 def _github_search_repos(query: str, page: int = 1) -> dict:
     return {
         "total_count": 1,
@@ -296,7 +310,22 @@ class _GitLabHandler(BaseHTTPRequestHandler):
 
         page = int(params.get("page", ["1"])[0])
 
-        if parsed.path == "/api/v4/projects":
+        # Group-scoped --org narrowing uses /api/v4/groups/:id/{projects,search}.
+        # We record the group id so a test can assert the request was group-
+        # scoped, then fall through to the same response bodies the host-wide
+        # endpoints produce.
+        group_projects = (
+            parsed.path.startswith("/api/v4/groups/")
+            and parsed.path.endswith("/projects")
+        )
+        group_search = (
+            parsed.path.startswith("/api/v4/groups/")
+            and parsed.path.endswith("/search")
+        )
+        if group_projects or group_search:
+            _record_group(self, parsed.path.split("/")[4])
+
+        if parsed.path == "/api/v4/projects" or group_projects:
             search = params.get("search", ["spell"])[0]
             if _rate_limit_response(self, search):
                 return
@@ -314,7 +343,7 @@ class _GitLabHandler(BaseHTTPRequestHandler):
                 ],
                 headers=self._page_headers(search, page),
             )
-        elif parsed.path == "/api/v4/search":
+        elif parsed.path == "/api/v4/search" or group_search:
             scope = params.get("scope", ["blobs"])[0]
             _record_query(self, params.get("search", ["spell"])[0])
             search = params.get("search", ["spell"])[0]
