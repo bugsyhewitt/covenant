@@ -150,6 +150,67 @@ Example output with a finding (default redacted `secret`):
 }
 ```
 
+### Live secret verification (`--verify-secrets`)
+
+`--scan-secrets` reports *candidate* credentials by pattern match — but a string
+that *looks* like an AWS key may be expired, a placeholder, or example data. Pass
+`--verify-secrets` (implies `--scan-secrets`) to actually authenticate each
+detected credential against its issuing provider with a single **read-only,
+non-destructive** probe, turning "here are strings that look like keys" into
+"here are live keys."
+
+Each finding gains a `"verified"` field:
+
+| Value   | Meaning                                                          |
+|---------|-----------------------------------------------------------------|
+| `true`  | the credential authenticated (provider returned 200 — or 429: a rate-limited credential is still live) |
+| `false` | the provider rejected the credential (401/403 — expired or invalid) |
+| `null`  | covenant has no verifier for this credential type, or the probe could not complete |
+
+Supported credential types and their probes:
+
+| Credential type      | Probe (read-only)                          |
+|----------------------|--------------------------------------------|
+| AWS access key       | `sts:GetCallerIdentity` (the canonical zero-impact "who am I" call) |
+| Stripe secret key    | `GET /v1/balance`                          |
+
+Guardrails:
+
+- **Dedupe by secret** — fifty copies of the same key trigger exactly one probe,
+  so verification can't trip a target's rate-limits or anomaly detection by
+  hammering the same credential.
+- **Redaction still applies** — `--verify-secrets` probes the raw key internally
+  but, unless you also pass `--show-secrets`, the emitted `secret` field stays a
+  redacted fingerprint. The live value is verified without leaking into output.
+- **Read-only only** — both probes are non-mutating "who am I / what's my
+  balance" calls.
+
+> ⚠️ **Verification transmits the candidate secret OFF-BOX to the third-party
+> provider** (AWS / Stripe). Only use `--verify-secrets` when the target host is
+> in scope and you are authorized to test it.
+
+```bash
+# Detect AND live-verify credentials (output stays redacted)
+covenant github recon-code \
+  --scope-file scope.txt \
+  --query "api_key" \
+  --verify-secrets
+```
+
+Example finding with verification:
+
+```json
+{
+  "rule_id": "aws-access-key-id",
+  "description": "AWS access key ID",
+  "secret": "AKIA…[20 chars, sha256:9f3a]",
+  "start": 17,
+  "end": 37,
+  "fragment_index": 0,
+  "verified": true
+}
+```
+
 ### Result pagination (`--max-pages`)
 
 `recon-repo` and `recon-code` walk **all** result pages, not just the first.
