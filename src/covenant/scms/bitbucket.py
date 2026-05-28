@@ -160,6 +160,38 @@ class BitbucketClient(BaseSCMClient):
                 )
         return results
 
+    def enumerate_orgs(self, max_pages: int = DEFAULT_MAX_PAGES) -> list[dict]:
+        """List the Bitbucket workspaces this token can reach (blast radius).
+
+        Bitbucket's organizational unit is the *workspace*; ``GET
+        /2.0/workspaces`` returns the workspaces the authenticated token has
+        access to. We walk it with the shared ``next``-envelope paginator and
+        return a normalized list of ``{"name", "url"}`` dicts so the output
+        shape matches the other SCMs' ``enumerate_orgs``. The workspace ``slug``
+        is what feeds the ``--workspace`` flag of ``recon-code``, so this
+        directly tells the operator which workspaces are searchable.
+        """
+        results = []
+        for resp in self._get_paginated(
+            "/2.0/workspaces",
+            params={"pagelen": 100},
+            max_pages=max_pages,
+            next_request=_bitbucket_next,
+        ):
+            for item in resp.json().get("values", []):
+                slug = item.get("slug") or item.get("name")
+                if not slug:
+                    continue
+                links = item.get("links", {}).get("html", {})
+                results.append(
+                    {
+                        "name": slug,
+                        "url": links.get("href")
+                        or f"https://bitbucket.org/{slug}",
+                    }
+                )
+        return results
+
     def validate_token(self) -> dict:
         user = self._get("/2.0/user").json()
         username = user.get("username") or user.get("nickname")

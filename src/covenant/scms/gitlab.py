@@ -133,6 +133,44 @@ class GitLabClient(BaseSCMClient):
                 )
         return results
 
+    def enumerate_orgs(self, max_pages: int = DEFAULT_MAX_PAGES) -> list[dict]:
+        """List the GitLab groups this token can reach (read-only blast radius).
+
+        GitLab's organizational unit is the *group*; ``GET /api/v4/groups`` with
+        a membership filter returns the groups the authenticated user belongs
+        to. We walk it with the shared offset paginator and return a normalized
+        list of ``{"name", "url"}`` dicts so the output shape matches the other
+        SCMs' ``enumerate_orgs``.
+        """
+        path = "/api/v4/groups"
+        params = {
+            "min_access_level": 10,  # 10 = Guest; "any group I'm a member of"
+            "per_page": _PER_PAGE,
+            "page": 1,
+        }
+        results = []
+        for resp in self._get_paginated(
+            path,
+            params=params,
+            max_pages=max_pages,
+            next_request=_gitlab_next(path, params),
+        ):
+            body = resp.json()
+            if not isinstance(body, list):
+                continue
+            for item in body:
+                name = item.get("full_path") or item.get("path") or item.get("name")
+                if not name:
+                    continue
+                results.append(
+                    {
+                        "name": name,
+                        "url": item.get("web_url")
+                        or f"https://gitlab.com/{name}",
+                    }
+                )
+        return results
+
     def validate_token(self) -> dict:
         user = self._get("/api/v4/user").json()
         username = user.get("username")

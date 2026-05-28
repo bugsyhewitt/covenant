@@ -206,6 +206,25 @@ class _GitHubHandler(BaseHTTPRequestHandler):
                 {"login": "spellcaster", "id": 4242, "site_admin": True},
                 headers={"X-OAuth-Scopes": "repo, read:org, admin:org"},
             )
+        elif parsed.path == "/user/orgs":
+            # Org/blast-radius enumeration (--enumerate-orgs). Supports the
+            # MULTIPAGE_PREFIX is not relevant here (no query); serve a single
+            # page of two orgs so the test can assert the normalized shape.
+            self._json(
+                200,
+                [
+                    {
+                        "login": "acme-corp",
+                        "id": 1,
+                        "url": "https://api.github.com/orgs/acme-corp",
+                    },
+                    {
+                        "login": "wizards-inc",
+                        "id": 2,
+                        "url": "https://api.github.com/orgs/wizards-inc",
+                    },
+                ],
+            )
         else:
             self._json(404, {"message": "Not Found"})
 
@@ -296,6 +315,28 @@ class _GitLabHandler(BaseHTTPRequestHandler):
             self._json(
                 200,
                 {"name": "covenant", "scopes": ["read_api", "read_repository"]},
+            )
+        elif parsed.path == "/api/v4/groups":
+            # Group/blast-radius enumeration (--enumerate-orgs).
+            self._json(
+                200,
+                [
+                    {
+                        "id": 10,
+                        "name": "Acme Corp",
+                        "path": "acme-corp",
+                        "full_path": "acme-corp",
+                        "web_url": "https://gitlab.com/groups/acme-corp",
+                    },
+                    {
+                        "id": 11,
+                        "name": "Wizards",
+                        "path": "wizards",
+                        "full_path": "acme-corp/wizards",
+                        "web_url": "https://gitlab.com/groups/acme-corp/wizards",
+                    },
+                ],
+                headers={"X-Page": "1", "X-Next-Page": "", "X-Total-Pages": "1"},
             )
         else:
             self._json(404, {"message": "404 Not Found"})
@@ -424,6 +465,30 @@ class _BitbucketHandler(BaseHTTPRequestHandler):
             self._json(
                 200,
                 {"values": [{"permission": "admin"}]},
+            )
+        elif parsed.path == "/2.0/workspaces":
+            # Workspace/blast-radius enumeration (--enumerate-orgs).
+            self._json(
+                200,
+                {
+                    "values": [
+                        {
+                            "slug": "acme",
+                            "name": "Acme Corp",
+                            "links": {
+                                "html": {"href": "https://bitbucket.org/acme"}
+                            },
+                        },
+                        {
+                            "slug": "wizards",
+                            "name": "Wizards Inc",
+                            "links": {
+                                "html": {"href": "https://bitbucket.org/wizards"}
+                            },
+                        },
+                    ],
+                    "size": 2,
+                },
             )
         else:
             self._json(404, {"type": "error", "error": {"message": "Not Found"}})

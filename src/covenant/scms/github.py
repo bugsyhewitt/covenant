@@ -130,6 +130,40 @@ class GitHubClient(BaseSCMClient):
                 )
         return results
 
+    def enumerate_orgs(self, max_pages: int = DEFAULT_MAX_PAGES) -> list[dict]:
+        """List the organizations this token can reach (read-only blast radius).
+
+        Walks ``GET /user/orgs`` (the orgs the authenticated user is a member
+        of) with the shared paginator, returning a normalized list of
+        ``{"name", "url"}`` dicts. This is the actionable "what can this
+        credential touch?" signal that complements the identity/scopes already
+        reported by :meth:`validate_token`: a permissive scope list on a token
+        that belongs to no interesting org has a very different blast radius
+        from the same scopes on a token inside the target's org.
+        """
+        results = []
+        for resp in self._get_paginated(
+            "/user/orgs",
+            params={"per_page": 100},
+            max_pages=max_pages,
+            next_request=_next_link,
+        ):
+            body = resp.json()
+            if not isinstance(body, list):
+                continue
+            for item in body:
+                login = item.get("login")
+                if not login:
+                    continue
+                results.append(
+                    {
+                        "name": login,
+                        "url": item.get("url")
+                        or f"https://github.com/{login}",
+                    }
+                )
+        return results
+
     def validate_token(self) -> dict:
         resp = self._get("/user")
         user = resp.json()
