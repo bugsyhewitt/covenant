@@ -596,3 +596,138 @@ def test_bitbucket_recon_code_no_scan_secrets_no_findings_key(bitbucket_mock, sc
     assert "secret_findings" not in first, (
         "secret_findings should only appear when --scan-secrets is passed"
     )
+
+
+# --- Item 7: --exclude appends NOT qualifiers to the outgoing query ----------
+
+
+def test_github_recon_code_exclude_adds_not_qualifier(github_mock, scope_file):
+    """--exclude TERM appends 'NOT TERM' to the query that hits the API."""
+    proc = _run(
+        [
+            "github",
+            "recon-code",
+            "--scope-file",
+            scope_file,
+            "--query",
+            "spell",
+            "--token-env",
+            "COVENANT_TOKEN",
+            "--target-url",
+            github_mock.base_url,
+            "--exclude",
+            "example",
+            "--exclude",
+            "test",
+        ]
+    )
+    assert proc.returncode == 0, proc.stderr
+    # The mock recorded the raw query string it received.
+    received = github_mock._server.received_queries
+    assert received, "mock did not record any code-search query"
+    assert received[-1] == "spell NOT example NOT test", received
+    # The payload echoes the operator's ORIGINAL query, not the augmented one.
+    payload = json.loads(proc.stdout)
+    assert payload["query"] == "spell"
+
+
+def test_gitlab_recon_code_exclude_adds_not_qualifier(gitlab_mock, scope_file):
+    proc = _run(
+        [
+            "gitlab",
+            "recon-code",
+            "--scope-file",
+            scope_file,
+            "--query",
+            "spell",
+            "--token-env",
+            "COVENANT_TOKEN",
+            "--target-url",
+            gitlab_mock.base_url,
+            "--exclude",
+            "localhost",
+        ]
+    )
+    assert proc.returncode == 0, proc.stderr
+    received = gitlab_mock._server.received_queries
+    assert received and received[-1] == "spell NOT localhost", received
+
+
+def test_recon_code_no_exclude_query_unchanged(github_mock, scope_file):
+    """Without --exclude the outgoing query is exactly the operator's query."""
+    proc = _run(
+        [
+            "github",
+            "recon-code",
+            "--scope-file",
+            scope_file,
+            "--query",
+            "spell",
+            "--token-env",
+            "COVENANT_TOKEN",
+            "--target-url",
+            github_mock.base_url,
+        ]
+    )
+    assert proc.returncode == 0, proc.stderr
+    received = github_mock._server.received_queries
+    assert received and received[-1] == "spell", received
+
+
+# --- Item 7: --pattern-set selection -----------------------------------------
+
+
+def test_github_recon_code_pattern_set_aws_detects_aws(github_mock, scope_file):
+    """--pattern-set aws still detects the planted AWS key."""
+    proc = _run(
+        [
+            "github",
+            "recon-code",
+            "--scope-file",
+            scope_file,
+            "--query",
+            "spell",
+            "--token-env",
+            "COVENANT_TOKEN",
+            "--target-url",
+            github_mock.base_url,
+            "--scan-secrets",
+            "--pattern-set",
+            "aws",
+        ]
+    )
+    assert proc.returncode == 0, proc.stderr
+    findings = json.loads(proc.stdout)["results"][0]["secret_findings"]
+    assert any(f["rule_id"] == "aws-access-key-id" for f in findings), findings
+
+
+def test_recon_code_invalid_pattern_set_errors(github_mock, scope_file):
+    """An unknown --pattern-set exits non-zero with a helpful message."""
+    proc = _run(
+        [
+            "github",
+            "recon-code",
+            "--scope-file",
+            scope_file,
+            "--query",
+            "spell",
+            "--token-env",
+            "COVENANT_TOKEN",
+            "--target-url",
+            github_mock.base_url,
+            "--scan-secrets",
+            "--pattern-set",
+            "does-not-exist",
+        ]
+    )
+    assert proc.returncode != 0
+    assert "pattern-set" in proc.stderr.lower()
+    assert "does-not-exist" in proc.stderr
+
+
+def test_recon_code_help_lists_item7_flags(github_mock, scope_file):
+    """recon-code --help advertises the new --pattern-set and --exclude flags."""
+    proc = _run(["github", "recon-code", "--help"])
+    assert proc.returncode == 0
+    assert "--pattern-set" in proc.stdout
+    assert "--exclude" in proc.stdout

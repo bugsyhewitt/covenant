@@ -33,8 +33,35 @@ _PREFIX_LEN = 4
 _HASH_LEN = 4
 
 
+#: Pattern set used when the caller does not select one explicitly. ``full``
+#: runs every rule (including the generic high-entropy detector), preserving
+#: the pre-Item-7 behaviour so existing callers and tests are unaffected.
+DEFAULT_PATTERN_SET = "full"
+
+
 class SecretScanUnavailable(Exception):
     """Raised when necromancer-patterns is not installed."""
+
+
+def available_pattern_sets() -> list[str]:
+    """Return the pattern-set names exposed by ``necromancer-patterns``.
+
+    Thin pass-through over ``necromancer_patterns.available_pattern_sets()``
+    so the CLI can validate ``--pattern-set`` against the live library rather
+    than a hard-coded list that could drift from the dependency. Raises
+    :class:`SecretScanUnavailable` (with the same install hint as
+    :func:`scan_fragments`) when the optional ``scan`` extra is not installed.
+    """
+    try:
+        from necromancer_patterns import (  # type: ignore[import]
+            available_pattern_sets as _sets,
+        )
+    except ImportError as exc:
+        raise SecretScanUnavailable(
+            "secret scanning requires the 'scan' extra: "
+            "pip install 'covenant[scan]'"
+        ) from exc
+    return list(_sets())
 
 
 def redact(secret: str) -> str:
@@ -62,7 +89,12 @@ def redact(secret: str) -> str:
     return f"{prefix}…[{length} chars, sha256:{digest}]"
 
 
-def scan_fragments(fragments: list[str], *, reveal: bool = False) -> list[dict]:
+def scan_fragments(
+    fragments: list[str],
+    *,
+    reveal: bool = False,
+    pattern_set: str = DEFAULT_PATTERN_SET,
+) -> list[dict]:
     """Scan a list of text fragments for credential patterns.
 
     Returns a flat list of finding dicts (one per match across all fragments).
@@ -73,6 +105,12 @@ def scan_fragments(fragments: list[str], *, reveal: bool = False) -> list[dict]:
     (see :func:`redact`) so covenant's own output never becomes a new place a
     live credential leaks to. Pass ``reveal=True`` to emit the full raw secret
     value -- only do this when the operator has explicitly opted in.
+
+    ``pattern_set`` selects which rule bundle ``necromancer-patterns`` applies
+    (e.g. ``minimal``, ``aws``, ``full``); it defaults to ``full`` to preserve
+    the pre-Item-7 behaviour. Narrowing the set (e.g. ``aws`` for an
+    AWS-focused engagement) drops the generic high-entropy rule and the false
+    positives it produces. See :func:`available_pattern_sets`.
 
     Raises :class:`SecretScanUnavailable` if ``necromancer-patterns`` is not
     installed in the current environment.
@@ -87,7 +125,7 @@ def scan_fragments(fragments: list[str], *, reveal: bool = False) -> list[dict]:
 
     results: list[dict] = []
     for idx, fragment in enumerate(fragments):
-        for m in match(fragment):
+        for m in match(fragment, pattern_set=pattern_set):
             d = m.to_dict()
             d["fragment_index"] = idx
             if not reveal:
