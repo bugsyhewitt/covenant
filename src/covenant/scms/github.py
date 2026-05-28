@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import httpx
 
+from ..tokens import classify_token
 from .base import DEFAULT_MAX_PAGES, BaseSCMClient, SCMError
 
 # GitHub's text-match Accept header requests snippet fragments alongside code
@@ -137,8 +138,12 @@ class GitHubClient(BaseSCMClient):
         login = user.get("login")
         if not login:
             raise SCMError("token validation returned no user identity")
+        fingerprint = classify_token(self.token, "github")
         return {
             "scopes": scopes,
             "user": login,
             "admin": bool(user.get("site_admin", False)),
+            "token_type": fingerprint["token_type"],
+            "token_note": fingerprint["note"],
+            "token_type_confidence": fingerprint["confidence"],
         }

@@ -127,6 +127,76 @@ def test_github_validate_token(github_mock, scope_file):
     assert isinstance(payload["admin"], bool)
 
 
+# --- Item 4: validate-token reports token_type fingerprint -------------------
+
+
+def test_github_validate_token_reports_token_type(github_mock, scope_file):
+    """validate-token output carries a token_type fingerprint (POST_V01 Item 4)."""
+    proc = _run(
+        [
+            "github",
+            "validate-token",
+            "--token-env",
+            "COVENANT_TOKEN",
+            "--scope-file",
+            scope_file,
+            "--target-url",
+            github_mock.base_url,
+        ],
+        env_extra={"COVENANT_TOKEN": "ghp_" + "A" * 36},
+    )
+    assert proc.returncode == 0, proc.stderr
+    payload = json.loads(proc.stdout)
+    assert payload["token_type"] == "github-pat-classic"
+    # Original v0.1 fields are still present (no shape regression).
+    assert "scopes" in payload and "user" in payload and "admin" in payload
+    # The raw token must never be echoed back into the payload.
+    assert ("A" * 36) not in json.dumps(payload)
+
+
+def test_gitlab_validate_token_reports_token_type_and_role_note(
+    gitlab_mock, scope_file
+):
+    proc = _run(
+        [
+            "gitlab",
+            "validate-token",
+            "--token-env",
+            "COVENANT_TOKEN",
+            "--scope-file",
+            scope_file,
+            "--target-url",
+            gitlab_mock.base_url,
+        ],
+        env_extra={"COVENANT_TOKEN": "glpat-" + "x" * 20},
+    )
+    assert proc.returncode == 0, proc.stderr
+    payload = json.loads(proc.stdout)
+    assert payload["token_type"] == "gitlab-pat"
+    # GitLab payloads must surface the scopes-AND-roles caveat.
+    assert "role" in payload.get("token_note", "").lower()
+
+
+def test_bitbucket_validate_token_reports_token_type(bitbucket_mock, scope_file):
+    proc = _run(
+        [
+            "bitbucket",
+            "validate-token",
+            "--token-env",
+            "COVENANT_TOKEN",
+            "--scope-file",
+            scope_file,
+            "--target-url",
+            bitbucket_mock.base_url,
+        ],
+        env_extra={"COVENANT_TOKEN": "ATBB" + "x" * 24},
+    )
+    assert proc.returncode == 0, proc.stderr
+    payload = json.loads(proc.stdout)
+    assert payload["token_type"] == "bitbucket-app-password"
+    assert "deprecat" in payload.get("token_note", "").lower()
+
+
 # --- Criterion 6 & 7: gitlab + bitbucket recon-repo parity -------------------
 
 

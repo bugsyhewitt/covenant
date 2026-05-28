@@ -174,6 +174,46 @@ covenant github recon-code \
 
 The JSON output shape is unchanged — `results` is simply a longer flat array.
 
+### Token-type fingerprinting (`validate-token`)
+
+`validate-token` now reports **what kind of token** you hold, not just its
+scopes. The token's class is encoded in its prefix, and the class is decisive
+for blast-radius reasoning — a fine-grained PAT's scope list reads completely
+differently from a classic PAT's, and a GitHub App installation token (`ghs_`)
+implies App reach across an installation rather than a single user's access.
+covenant derives this **offline** from the token's shape (no extra API call, no
+rate-limit cost) and adds three fields to the output:
+
+| Field                    | Meaning                                                |
+|--------------------------|--------------------------------------------------------|
+| `token_type`             | e.g. `github-pat-classic`, `gitlab-oauth`, `bitbucket-app-password`, or `unknown` |
+| `token_note`             | human-readable blast-radius / caveat note              |
+| `token_type_confidence`  | `high` (matched prefix), `medium` (legacy hex heuristic), `low` (unrecognized shape) |
+
+Recognized classes include GitHub `ghp_`/`gho_`/`ghu_`/`ghs_`/`ghr_`/
+`github_pat_`/legacy-40-hex, GitLab `glpat-`/`gloas-`/`glptt-`, and Bitbucket
+API tokens (`ATCTT`) vs the **deprecated** app-password form (`ATBB`, with
+creation ended 2025-09-09 and full cutover to API tokens completing 2026-06-09).
+For GitLab, `token_note` also reminds you that effective access is bounded by
+**scopes AND the user's role** — a permissive `scopes` list is not by itself a
+grant.
+
+The classifier reasons only about the token's shape and never echoes the raw
+credential into its output, so `validate-token` results stay safe to share.
+
+Example output:
+
+```json
+{
+  "scopes": ["repo", "read:org"],
+  "user": "spellcaster",
+  "admin": false,
+  "token_type": "github-pat-classic",
+  "token_note": "classic personal access token; scopes apply org-wide to every resource the user can reach",
+  "token_type_confidence": "high"
+}
+```
+
 ## Usage — one example per SCM
 
 GitHub repo recon:
