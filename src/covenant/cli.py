@@ -218,13 +218,28 @@ def _build_parser() -> argparse.ArgumentParser:
             ),
         )
         token.add_argument(
+            "--enumerate-keys",
+            action="store_true",
+            default=False,
+            dest="enumerate_keys",
+            help=(
+                "additionally list the SSH and GPG public keys attached to "
+                "this token's account via read-only key queries; adds a "
+                "'keys' array of {type, id, title, fingerprint} entries. "
+                "Reveals which machines can push as this identity (SSH) and "
+                "which keys can sign 'Verified' commits in its name (GPG). "
+                "Only PUBLIC key metadata is shown; private keys are never "
+                "read. Bitbucket exposes SSH keys only (no GPG-key API)."
+            ),
+        )
+        token.add_argument(
             "--max-pages",
             type=int,
             default=DEFAULT_MAX_PAGES,
             help=(
-                f"maximum org/group/workspace pages to walk when "
-                f"--enumerate-orgs is set (default: {DEFAULT_MAX_PAGES}, "
-                f"hard ceiling: {HARD_MAX_PAGES})."
+                f"maximum org/group/workspace/key pages to walk when "
+                f"--enumerate-orgs or --enumerate-keys is set (default: "
+                f"{DEFAULT_MAX_PAGES}, hard ceiling: {HARD_MAX_PAGES})."
             ),
         )
 
@@ -376,8 +391,16 @@ def main(argv: list[str] | None = None) -> int:
             # 'orgs' array only appears when --enumerate-orgs is requested.
             if getattr(args, "enumerate_orgs", False):
                 payload["orgs"] = client.enumerate_orgs(max_pages=max_pages)
-                if client.warnings:
-                    payload["warnings"] = list(client.warnings)
+            # Optional SSH/GPG key blast-radius enumeration. Read-only,
+            # additive: the v0.1 validate-token fields are untouched and the
+            # 'keys' array only appears when --enumerate-keys is requested.
+            if getattr(args, "enumerate_keys", False):
+                payload["keys"] = client.enumerate_keys(max_pages=max_pages)
+            if (
+                getattr(args, "enumerate_orgs", False)
+                or getattr(args, "enumerate_keys", False)
+            ) and client.warnings:
+                payload["warnings"] = list(client.warnings)
         else:  # pragma: no cover - argparse guarantees a valid module
             parser.error(f"unknown module {args.module!r}")
             return EXIT_ERROR

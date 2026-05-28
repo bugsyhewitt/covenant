@@ -402,6 +402,41 @@ backward compatibility for the common bare-host scope file.
 
 ---
 
+## New directions (post-exhaustion)
+
+The original Items 1–8 plus the API-host follow-on are all shipped. Subsequent
+laps extend the toolkit along its natural axis — turning a captured token into a
+fuller blast-radius picture — rather than reopening closed items.
+
+### SSH/GPG key enumeration in validate-token (`--enumerate-keys`) — ✅ IMPLEMENTED (Phase 2, Rotation 13)
+
+> **Status: shipped.** A read-only `--enumerate-keys` flag on `validate-token`
+> walks the account's PUBLIC SSH and GPG keys and adds a normalized `keys`
+> array of `{type, id, title, fingerprint}` entries (`type` ∈ `ssh`/`gpg`).
+> GitHub uses `GET /user/keys` + `GET /user/gpg_keys`; GitLab uses
+> `GET /api/v4/user/keys` + `GET /api/v4/user/gpg_keys`; Bitbucket resolves the
+> user UUID via `GET /2.0/user` then walks `GET /2.0/users/{uuid}/ssh-keys`
+> (Bitbucket Cloud has no public GPG-key API, so SSH only). The signal: SSH
+> keys reveal which machines can push as the identity (persistence); GPG keys
+> reveal which keys can sign "Verified" commits in its name (trust/supply-chain).
+> Only public metadata is emitted — private key material is never read, and
+> GitLab's multi-line armored GPG body is collapsed to a bounded single-line
+> share-safe fingerprint. The walk reuses the shared paginator, scope guardrail,
+> and rate-limit backoff, is bounded by `--max-pages`, and composes with
+> `--enumerate-orgs`. Purely additive: the v0.1 `scopes`/`user`/`admin` fields
+> are untouched and the `keys` array appears only when the flag is set. Tests:
+> `tests/test_enumerate_keys.py` covers each client's normalized shape, the
+> GitLab GPG single-line-fingerprint reduction, the no-private-material
+> invariant across all three SCMs, e2e presence-only-when-requested,
+> composition with `--enumerate-orgs`, the scope-guardrail gate (exit 2), and
+> `--help` documentation. Full suite: 179 passing (167 baseline + 12 new), zero
+> regressions. README updated with an "SSH/GPG key enumeration" subsection.
+
+**Remaining candidate directions (unimplemented, for future laps):** branch
+protection / ruleset policy audit, webhook enumeration (exfil/SSRF surface),
+deploy-key enumeration per repo, gist/snippet enumeration, and commit-history
+secret scanning (`git log` blob walking beyond code-search fragments).
+
 ## Follow-on fixes
 
 ### API-host vs web-host scope mismatch (Priority: CRITICAL) — ✅ IMPLEMENTED (Phase 2, Rotation 11)
