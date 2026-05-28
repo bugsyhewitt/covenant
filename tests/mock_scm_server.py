@@ -82,6 +82,21 @@ def _rate_limit_response(handler, query: str) -> bool:
     return False
 
 
+def _record_query(handler, value: str) -> None:
+    """Stash the most-recent raw search-query string on the server instance.
+
+    Lets the Item-7 ``--exclude`` tests assert that the negative ``NOT <term>``
+    qualifiers actually reached the wire (the handlers otherwise only read the
+    first token of the query). Per-server state survives across the stateless
+    per-request handler objects.
+    """
+    queries = getattr(handler.server, "received_queries", None)
+    if queries is None:
+        queries = []
+        handler.server.received_queries = queries
+    queries.append(value)
+
+
 def _github_search_repos(query: str, page: int = 1) -> dict:
     return {
         "total_count": 1,
@@ -175,6 +190,7 @@ class _GitHubHandler(BaseHTTPRequestHandler):
             headers = self._link_header(parsed.path, params, page)
             self._json(200, _github_search_repos(query, page=page), headers=headers)
         elif parsed.path == "/search/code":
+            _record_query(self, params.get("q", ["spell"])[0])
             query = params.get("q", ["spell"])[0].split()[0]
             accept = self.headers.get("Accept", "")
             text_match = "text-match" in accept
@@ -252,6 +268,7 @@ class _GitLabHandler(BaseHTTPRequestHandler):
             )
         elif parsed.path == "/api/v4/search":
             scope = params.get("scope", ["blobs"])[0]
+            _record_query(self, params.get("search", ["spell"])[0])
             search = params.get("search", ["spell"])[0]
             if scope == "blobs":
                 self._json(

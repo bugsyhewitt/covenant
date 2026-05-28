@@ -235,6 +235,42 @@ covenant github recon-code \
 
 The JSON output shape is unchanged — `results` is simply a longer flat array.
 
+### Precision tuning (`--pattern-set`, `--exclude`)
+
+`recon-code` exposes two knobs that sharpen signal-to-noise without changing
+any detection logic.
+
+**`--pattern-set {minimal,aws,full,…}`** picks which
+[necromancer-patterns](https://github.com/bugsyhewitt/necromancer-patterns) rule
+bundle `--scan-secrets` applies. The default is `full` (every rule, including
+the generic high-entropy detector). On an AWS-only engagement, `--pattern-set
+aws` drops the generic rule and the false positives it produces. The value is
+validated against the rule sets the installed library actually ships — an
+unknown set exits with the list of valid choices. It only takes effect together
+with `--scan-secrets` / `--show-secrets` / `--verify-secrets`.
+
+**`--exclude TERM`** (repeatable) appends a `NOT TERM` negative qualifier to the
+search query before it hits the API, so you can strip demo/test/localhost noise
+without hand-crafting query strings — and stretch the per-query page budget
+against GitHub's search cap. Excludes apply to **GitHub and GitLab** (which
+honor `NOT` in their search grammar); they are ignored for Bitbucket, whose
+code-search syntax differs. The `query` field in the JSON output still echoes
+the query you typed, not the augmented one.
+
+```bash
+# AWS-only scan, excluding obvious sample/test files
+covenant github recon-code \
+  --scope-file scope.txt \
+  --query "AKIA" \
+  --scan-secrets \
+  --pattern-set aws \
+  --exclude example \
+  --exclude test
+```
+
+This sends `AKIA NOT example NOT test` to GitHub's code search and scans the
+results with only the AWS rule set.
+
 ### Rate-limit handling (automatic retry with backoff)
 
 SCM search APIs are aggressively throttled — GitHub's search surface in

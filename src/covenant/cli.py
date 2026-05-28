@@ -27,6 +27,34 @@ EXIT_OUT_OF_SCOPE = 2
 
 _MODULES = ("recon-repo", "recon-code", "validate-token")
 
+#: SCMs whose search query language accepts a leading ``NOT <term>`` negative
+#: qualifier. GitHub and GitLab both honor ``NOT`` in their search syntax;
+#: Bitbucket Cloud's code search uses a different grammar, so ``--exclude`` is
+#: a no-op there (the flag is accepted but the query is passed through
+#: unchanged) rather than emitting a qualifier the API would misparse.
+_NOT_QUALIFIER_SCMS = frozenset({"github", "gitlab"})
+
+
+def build_query(query: str, excludes: list[str] | None, scm: str) -> str:
+    """Append provider-appropriate negative qualifiers to a search query.
+
+    For ``--exclude TERM`` (repeatable), GitHub and GitLab support stripping
+    matches with a ``NOT <term>`` qualifier, which is the recon-literature's
+    recommended way to drop demo/test/localhost noise and stretch the per-query
+    page budget. Each term is appended as ``NOT <term>`` in order; blank terms
+    are ignored. For SCMs outside :data:`_NOT_QUALIFIER_SCMS` (i.e. Bitbucket)
+    the query is returned unchanged. The function is pure so it is unit-testable
+    independent of the CLI and the network.
+    """
+    if not excludes or scm not in _NOT_QUALIFIER_SCMS:
+        return query
+    parts = [query.strip()] if query.strip() else []
+    for term in excludes:
+        term = term.strip()
+        if term:
+            parts.append(f"NOT {term}")
+    return " ".join(parts)
+
 # Lazy import guard: secrets module requires the optional 'scan' extra.
 def _get_scan_fragments():  # noqa: ANN201
     from .secrets import scan_fragments, SecretScanUnavailable  # noqa: PLC0415
@@ -136,6 +164,31 @@ def _build_parser() -> argparse.ArgumentParser:
                 "the target host is in scope and you have authorization."
             ),
         )
+        code.add_argument(
+            "--pattern-set",
+            default=None,
+            metavar="SET",
+            help=(
+                "secret-scan rule set to apply (e.g. minimal, aws, full); "
+                "defaults to 'full'. Narrowing it (e.g. 'aws') drops the "
+                "generic high-entropy rule and its false positives. Only "
+                "meaningful with --scan-secrets/--show-secrets/--verify-secrets. "
+                "Validated against the installed necromancer-patterns sets."
+            ),
+        )
+        code.add_argument(
+            "--exclude",
+            action="append",
+            default=None,
+            metavar="TERM",
+            dest="exclude",
+            help=(
+                "append a 'NOT <TERM>' negative qualifier to the search query "
+                "to strip demo/test/localhost noise (repeatable). GitHub and "
+                "GitLab only; ignored for Bitbucket. Sharpens precision and "
+                "stretches the per-query page budget."
+            ),
+        )
         if scm == "bitbucket":
             code.add_argument(
                 "--workspace",
@@ -219,6 +272,11 @@ def main(argv: list[str] | None = None) -> int:
                 or reveal_secrets
                 or verify_secrets
             )
+            # --exclude appends provider-appropriate NOT qualifiers (Item 7);
+            # the augmented query is what we actually send to the SCM API.
+            effective_query = build_query(
+                args.query, getattr(args, "exclude", None), args.scm
+            )
             # Bitbucket code search is workspace-scoped; surface the workspace
             # kwarg only when talking to Bitbucket so other clients are unchanged.
             code_kwargs: dict = {"max_pages": max_pages}
@@ -226,8 +284,29 @@ def main(argv: list[str] | None = None) -> int:
                 code_kwargs["workspace"] = getattr(args, "workspace", None)
             if scan_secrets:
                 scan_fragments, SecretScanUnavailable = _get_scan_fragments()
+                # Resolve and validate the requested pattern set against the
+                # installed library (Item 7). A default of None means "full".
+                requested_set = getattr(args, "pattern_set", None)
+                try:
+                    from .secrets import (  # noqa: PLC0415
+                        DEFAULT_PATTERN_SET,
+                        available_pattern_sets,
+                    )
+
+                    valid_sets = available_pattern_sets()
+                except SecretScanUnavailable as exc:
+                    print(f"error: {exc}", file=sys.stderr)
+                    return EXIT_ERROR
+                pattern_set = requested_set or DEFAULT_PATTERN_SET
+                if pattern_set not in valid_sets:
+                    print(
+                        f"error: unknown --pattern-set {pattern_set!r}; "
+                        f"available sets: {', '.join(valid_sets)}",
+                        file=sys.stderr,
+                    )
+                    return EXIT_ERROR
                 results = client.recon_code_with_fragments(
-                    args.query, **code_kwargs
+                    effective_query, **code_kwargs
                 )
                 # When verifying we must scan raw (to probe), then redact the
                 # emitted value afterwards unless --show-secrets was given.
@@ -235,7 +314,11 @@ def main(argv: list[str] | None = None) -> int:
                 for result in results:
                     fragments = result.pop("fragments", [])
                     try:
-                        findings = scan_fragments(fragments, reveal=scan_reveal)
+                        findings = scan_fragments(
+                            fragments,
+                            reveal=scan_reveal,
+                            pattern_set=pattern_set,
+                        )
                     except SecretScanUnavailable as exc:
                         print(f"error: {exc}", file=sys.stderr)
                         return EXIT_ERROR
@@ -249,7 +332,7 @@ def main(argv: list[str] | None = None) -> int:
                                 f["secret"] = redact(f.get("secret", ""))
                     result["secret_findings"] = findings
             else:
-                results = client.recon_code(args.query, **code_kwargs)
+                results = client.recon_code(effective_query, **code_kwargs)
             payload = {"scm": args.scm, "query": args.query, "results": results}
             if client.warnings:
                 payload["warnings"] = list(client.warnings)
