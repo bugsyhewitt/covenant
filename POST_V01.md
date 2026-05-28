@@ -399,3 +399,31 @@ backward compatibility for the common bare-host scope file.
 - covenant source review — confirmed single-page fetch in all clients, the Bitbucket
   `recon_code` → `recon_repo` stub, plaintext `secret` output, and the unused `pattern_set`
   parameter in `necromancer_patterns.match`. Direct basis for Items 1, 2, 3, 7.
+
+---
+
+## Follow-on fixes
+
+### API-host vs web-host scope mismatch (Priority: CRITICAL) — ✅ IMPLEMENTED (Phase 2, Rotation 11)
+
+> **Status: shipped.** The scope guardrail compared the *API* host the client
+> talks to (`api.github.com`, `api.bitbucket.org`) against the *web* host
+> operators naturally list (`github.com`, `bitbucket.org`). Because they differ,
+> a natural scope file refused every default GitHub and Bitbucket run with exit
+> code 2 — two of three SCMs were unusable unless the operator listed the
+> unnatural `api.*` host. (The e2e suite never caught this because it always
+> overrides `--target-url` to a loopback mock that is in scope as `127.0.0.1`.)
+> `scope.py` now canonicalizes the two known SCM API subdomains to their web
+> host (`api.github.com → github.com`, `api.bitbucket.org → bitbucket.org`) at
+> both load time and match time, so listing either form authorizes the default
+> run. GitLab is unaffected (its API and web host are both `gitlab.com`).
+> Canonicalization never widens scope to an unlisted host, and Item 8's
+> org/workspace narrowing still holds against the canonical host (a
+> `bitbucket.org/acme` entry still refuses `--workspace victim` even though the
+> CLI checks `api.bitbucket.org`). Tests: 6 unit tests in `tests/test_scope.py`
+> (web-host→API-host for GitHub and Bitbucket, symmetric API-form listing,
+> GitLab untouched, unrelated `api.*` host still refused, org-restriction holds
+> against the API host) plus 2 e2e tests asserting a default-URL GitHub/Bitbucket
+> run no longer trips the scope guardrail (exit ≠ 2). README updated with a
+> "Web hosts and API hosts are equivalent" subsection. Full suite: 158 passing
+> (150 baseline + 8 new), zero regressions.

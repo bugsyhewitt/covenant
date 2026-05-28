@@ -32,6 +32,39 @@ class ScopeError(Exception):
     """Raised when a target host is not in the authorized scope."""
 
 
+#: Map an SCM's API hostname to the canonical web host an operator writes in a
+#: scope file. GitHub and Bitbucket serve their REST APIs from a dedicated
+#: ``api.*`` subdomain (``api.github.com``, ``api.bitbucket.org``) while
+#: operators reason about — and list — the human-facing host (``github.com``,
+#: ``bitbucket.org``). Without this aliasing the scope guardrail compared the
+#: API host against the listed web host, did not match, and refused every
+#: default GitHub/Bitbucket run as "out of scope" — making the tool unusable
+#: for two of three SCMs unless the operator listed the unnatural API host.
+#: GitLab is intentionally absent: its API and web host are the same
+#: (``gitlab.com``), so no alias is needed. Aliasing is canonicalization only,
+#: not authorization — it never *adds* a host to scope; it merely matches the
+#: API host to the equivalent web host the operator already listed (or the
+#: reverse, so listing the API host also works).
+_HOST_ALIASES: dict[str, str] = {
+    "api.github.com": "github.com",
+    "api.bitbucket.org": "bitbucket.org",
+}
+
+
+def _canonical_host(host: str | None) -> str | None:
+    """Return the canonical (web-facing) host for ``host``.
+
+    Known API subdomains (``api.github.com``, ``api.bitbucket.org``) collapse to
+    their web host so that a scope file listing ``github.com`` authorizes a
+    recon run that talks to ``api.github.com``. Unknown hosts pass through
+    unchanged. The result is always lower-cased.
+    """
+    if not host:
+        return host
+    host = host.lower()
+    return _HOST_ALIASES.get(host, host)
+
+
 def _split_host_org(entry: str) -> tuple[str | None, str | None]:
     """Split a scope-file entry or target URL into ``(host, org)``.
 
@@ -94,6 +127,9 @@ class Scope:
                 host, org = _split_host_org(line)
                 if not host:
                     continue
+                # Canonicalize so listing either the web host or the API host
+                # behaves identically (api.github.com → github.com).
+                host = _canonical_host(host)
                 hosts.add(host)
                 if org:
                     orgs.setdefault(host, set()).add(org)
@@ -105,12 +141,12 @@ class Scope:
         return cls(hosts=hosts, orgs=orgs, host_wide=host_wide)
 
     def is_in_scope(self, target_url: str) -> bool:
-        host = _host_of(target_url)
+        host = _canonical_host(_host_of(target_url))
         return bool(host) and host in self.hosts
 
     def assert_in_scope(self, target_url: str) -> None:
         if not self.is_in_scope(target_url):
-            host = _host_of(target_url) or target_url
+            host = _canonical_host(_host_of(target_url)) or target_url
             raise ScopeError(
                 f"target {host!r} is out of scope; not listed in the scope file"
             )
@@ -122,7 +158,7 @@ class Scope:
         never appeared as a bare (host-wide) entry. Such a host refuses targets
         in orgs outside its authorized set.
         """
-        host = host.lower()
+        host = _canonical_host(host)
         return host in self.orgs and host not in self.host_wide
 
     def is_org_in_scope(self, target_url: str, org: str | None) -> bool:
@@ -135,7 +171,7 @@ class Scope:
           (host-wide) recon target is not authorized.
         - Otherwise → ``True`` iff ``org`` is among the authorized orgs.
         """
-        host = _host_of(target_url)
+        host = _canonical_host(_host_of(target_url))
         if not host or host not in self.hosts:
             return False
         if not self.is_host_org_restricted(host):
@@ -154,7 +190,7 @@ class Scope:
         """
         if self.is_org_in_scope(target_url, org):
             return
-        host = _host_of(target_url) or target_url
+        host = _canonical_host(_host_of(target_url)) or target_url
         if org is None:
             authorized = sorted(self.orgs.get(host, set()))
             raise ScopeError(

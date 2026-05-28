@@ -97,3 +97,61 @@ def test_org_out_of_scope_for_host_not_in_scope(tmp_path):
     assert not scope.is_org_in_scope("https://gitlab.com", "acme")
     with pytest.raises(ScopeError):
         scope.assert_org_in_scope("https://gitlab.com", "acme")
+
+
+# --- API-host ⇄ web-host canonicalization ------------------------------------
+
+
+def test_web_host_scope_authorizes_github_api_host(tmp_path):
+    """Listing github.com authorizes the api.github.com the client talks to.
+
+    Without alias canonicalization the default GitHub recon run (which targets
+    api.github.com) was refused as out-of-scope against a natural scope file.
+    """
+    scope = _scope(tmp_path, "github.com\n")
+    assert scope.is_in_scope("https://api.github.com")
+    scope.assert_in_scope("https://api.github.com")
+
+
+def test_web_host_scope_authorizes_bitbucket_api_host(tmp_path):
+    scope = _scope(tmp_path, "bitbucket.org\n")
+    assert scope.is_in_scope("https://api.bitbucket.org")
+    scope.assert_in_scope("https://api.bitbucket.org")
+
+
+def test_listing_api_host_form_also_works(tmp_path):
+    """Canonicalization is symmetric: listing the api.* form is accepted too."""
+    scope = _scope(tmp_path, "api.github.com\n")
+    assert scope.hosts == {"github.com"}
+    scope.assert_in_scope("https://github.com")
+    scope.assert_in_scope("https://api.github.com")
+
+
+def test_gitlab_host_unaffected_by_aliasing(tmp_path):
+    """GitLab's API and web host are identical; aliasing leaves it untouched."""
+    scope = _scope(tmp_path, "gitlab.com\n")
+    assert scope.is_in_scope("https://gitlab.com")
+    with pytest.raises(ScopeError):
+        scope.assert_in_scope("https://api.gitlab.com")
+
+
+def test_unrelated_api_host_still_out_of_scope(tmp_path):
+    """Aliasing only maps the two known SCM API hosts; others don't collapse."""
+    scope = _scope(tmp_path, "github.com\n")
+    with pytest.raises(ScopeError):
+        scope.assert_in_scope("https://api.example.com")
+
+
+def test_org_restriction_holds_against_api_host(tmp_path):
+    """Item 8's org guardrail must survive canonicalization.
+
+    A bitbucket.org/acme scope entry must still refuse --workspace victim even
+    though the CLI scope-checks against api.bitbucket.org.
+    """
+    scope = _scope(tmp_path, "bitbucket.org/acme\n")
+    assert scope.is_host_org_restricted("api.bitbucket.org")
+    assert scope.is_org_in_scope("https://api.bitbucket.org", "acme")
+    assert not scope.is_org_in_scope("https://api.bitbucket.org", "victim")
+    scope.assert_org_in_scope("https://api.bitbucket.org", "acme")
+    with pytest.raises(ScopeError):
+        scope.assert_org_in_scope("https://api.bitbucket.org", "victim")
