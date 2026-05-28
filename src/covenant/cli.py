@@ -32,6 +32,11 @@ def _get_scan_fragments():  # noqa: ANN201
     from .secrets import scan_fragments, SecretScanUnavailable  # noqa: PLC0415
     return scan_fragments, SecretScanUnavailable
 
+
+def _get_verify_findings():  # noqa: ANN201
+    from .verify import verify_findings  # noqa: PLC0415
+    return verify_findings
+
 # Default API base URLs used for scope-checking when --target-url is omitted.
 _DEFAULT_URLS = {
     "github": "https://api.github.com",
@@ -117,6 +122,20 @@ def _build_parser() -> argparse.ArgumentParser:
                 "scrollback, and shared artifacts."
             ),
         )
+        code.add_argument(
+            "--verify-secrets",
+            action="store_true",
+            default=False,
+            help=(
+                "live-verify each detected credential against its issuing "
+                "provider with a single READ-ONLY auth probe (AWS "
+                "sts:GetCallerIdentity, Stripe GET /v1/balance), deduped per "
+                "unique secret; tags findings 'verified': true/false/null. "
+                "Implies --scan-secrets. WARNING: this transmits the candidate "
+                "secret OFF-BOX to the third-party provider — only use it when "
+                "the target host is in scope and you have authorization."
+            ),
+        )
         if scm == "bitbucket":
             code.add_argument(
                 "--workspace",
@@ -188,8 +207,16 @@ def main(argv: list[str] | None = None) -> int:
             }
         elif args.module == "recon-code":
             # --show-secrets opts into the full raw value and implies scanning.
+            # --verify-secrets implies scanning too, and needs the raw secret to
+            # probe even when the operator did NOT pass --show-secrets, so we
+            # scan with reveal=True internally and re-redact the output below.
             reveal_secrets = getattr(args, "show_secrets", False)
-            scan_secrets = getattr(args, "scan_secrets", False) or reveal_secrets
+            verify_secrets = getattr(args, "verify_secrets", False)
+            scan_secrets = (
+                getattr(args, "scan_secrets", False)
+                or reveal_secrets
+                or verify_secrets
+            )
             # Bitbucket code search is workspace-scoped; surface the workspace
             # kwarg only when talking to Bitbucket so other clients are unchanged.
             code_kwargs: dict = {"max_pages": max_pages}
@@ -200,15 +227,25 @@ def main(argv: list[str] | None = None) -> int:
                 results = client.recon_code_with_fragments(
                     args.query, **code_kwargs
                 )
+                # When verifying we must scan raw (to probe), then redact the
+                # emitted value afterwards unless --show-secrets was given.
+                scan_reveal = reveal_secrets or verify_secrets
                 for result in results:
                     fragments = result.pop("fragments", [])
                     try:
-                        result["secret_findings"] = scan_fragments(
-                            fragments, reveal=reveal_secrets
-                        )
+                        findings = scan_fragments(fragments, reveal=scan_reveal)
                     except SecretScanUnavailable as exc:
                         print(f"error: {exc}", file=sys.stderr)
                         return EXIT_ERROR
+                    if verify_secrets:
+                        verify_findings = _get_verify_findings()
+                        verify_findings(findings)
+                        if not reveal_secrets:
+                            from .secrets import redact  # noqa: PLC0415
+
+                            for f in findings:
+                                f["secret"] = redact(f.get("secret", ""))
+                    result["secret_findings"] = findings
             else:
                 results = client.recon_code(args.query, **code_kwargs)
             payload = {"scm": args.scm, "query": args.query, "results": results}
