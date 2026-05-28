@@ -235,6 +235,42 @@ covenant github recon-code \
 
 The JSON output shape is unchanged — `results` is simply a longer flat array.
 
+### Rate-limit handling (automatic retry with backoff)
+
+SCM search APIs are aggressively throttled — GitHub's search surface in
+particular has a low secondary-rate-limit ceiling, and page-walking
+(`--max-pages`) hits it fast. covenant treats a `429` (or GitHub's secondary
+`403`) as **"wait and retry,"** not a hard failure: it reads the server's retry
+hint and resumes automatically. A recon tool that died on the first `429` would
+be unreliable on exactly the large targets where it matters most.
+
+How it works, with no flags to set:
+
+- On a rate-limit response covenant honors, in priority order, the standard
+  `Retry-After` header, then the reset-epoch headers GitHub (`X-RateLimit-Reset`)
+  and GitLab (`RateLimit-Reset`) return; if none is present it falls back to a
+  bounded exponential backoff.
+- It retries up to **3 times** per request. Every wait is clamped (never longer
+  than 60s) so a misbehaving or hostile API can't stall covenant indefinitely.
+- If the retry budget is exhausted while the server is **still** throttling,
+  covenant stops the page-walk **cleanly** — it keeps the results gathered so
+  far instead of discarding the whole run — and adds a non-fatal `"warnings"`
+  array to the output so you know recall was **truncated**, not complete.
+
+```json
+{
+  "scm": "github",
+  "query": "internal_api",
+  "results": [ ... partial results ... ],
+  "warnings": [
+    "rate limited (HTTP 429) at https://api.github.com/search/code: retry budget of 3 exhausted; results may be partial"
+  ]
+}
+```
+
+When a run succeeds (even after retrying), no `warnings` key appears — its
+presence is the explicit signal that the result set may be incomplete.
+
 ### Token-type fingerprinting (`validate-token`)
 
 `validate-token` now reports **what kind of token** you hold, not just its

@@ -27,6 +27,60 @@ from urllib.parse import parse_qs, urlparse
 MULTIPAGE_PREFIX = "multipage"
 TOTAL_PAGES = 3
 
+# Rate-limit simulation (POST_V01.md Item 6). A query beginning with
+# RATELIMIT_PREFIX makes the server return HTTP 429 with a ``Retry-After: 0``
+# header for the first RATELIMIT_FAILS attempts, then succeed — proving covenant
+# retries with backoff and ultimately gets results. A query beginning with
+# RATELIMIT_FOREVER_PREFIX returns 429 on every attempt, so covenant exhausts
+# its retry budget and must surface a non-fatal ``warnings`` entry. Retry-After
+# is 0 in the mock so the backoff sleep is a no-op and tests stay fast.
+RATELIMIT_PREFIX = "ratelimit"
+RATELIMIT_FOREVER_PREFIX = "ratelimitforever"
+#: How many 429s the recoverable ``ratelimit`` scenario emits before succeeding.
+RATELIMIT_FAILS = 2
+
+
+def _rate_limit_response(handler, query: str) -> bool:
+    """If ``query`` requests the rate-limit scenario, emit a 429 and return True.
+
+    Recoverable (``ratelimit`` but not ``ratelimitforever``): the first
+    RATELIMIT_FAILS calls for that query key get a 429 with ``Retry-After: 0``;
+    afterwards this returns False so the handler serves a normal 200.
+
+    Unrecoverable (``ratelimitforever``): every call gets a 429 with a reset
+    header, so covenant exhausts its retry budget. We exercise the
+    ``X-RateLimit-Reset`` epoch-header path here (instead of ``Retry-After``) to
+    cover that branch of ``_parse_retry_after`` too; the reset is set to "now"
+    so the computed sleep clamps to ~0 and the test stays fast.
+
+    Per-query call counts live on the server instance so state persists across
+    the stateless per-request handler objects.
+    """
+    if not query.startswith(RATELIMIT_PREFIX):
+        return False
+
+    counts = getattr(handler.server, "_rl_counts", None)
+    if counts is None:
+        counts = {}
+        handler.server._rl_counts = counts
+    counts[query] = counts.get(query, 0) + 1
+    seen = counts[query]
+
+    forever = query.startswith(RATELIMIT_FOREVER_PREFIX)
+    if forever:
+        import time as _time
+
+        handler._json(
+            429,
+            {"message": "rate limited"},
+            headers={"X-RateLimit-Reset": str(int(_time.time()))},
+        )
+        return True
+    if seen <= RATELIMIT_FAILS:
+        handler._json(429, {"message": "rate limited"}, headers={"Retry-After": "0"})
+        return True
+    return False
+
 
 def _github_search_repos(query: str, page: int = 1) -> dict:
     return {
@@ -116,6 +170,8 @@ class _GitHubHandler(BaseHTTPRequestHandler):
 
         if parsed.path == "/search/repositories":
             query = params.get("q", ["spell"])[0].split()[0]
+            if _rate_limit_response(self, query):
+                return
             headers = self._link_header(parsed.path, params, page)
             self._json(200, _github_search_repos(query, page=page), headers=headers)
         elif parsed.path == "/search/code":
@@ -178,6 +234,8 @@ class _GitLabHandler(BaseHTTPRequestHandler):
 
         if parsed.path == "/api/v4/projects":
             search = params.get("search", ["spell"])[0]
+            if _rate_limit_response(self, search):
+                return
             self._json(
                 200,
                 [
@@ -273,11 +331,13 @@ class _BitbucketHandler(BaseHTTPRequestHandler):
     def log_message(self, *args):
         return
 
-    def _json(self, code: int, payload):
+    def _json(self, code: int, payload, headers: dict | None = None):
         body = json.dumps(payload).encode()
         self.send_response(code)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
+        for key, value in (headers or {}).items():
+            self.send_header(key, value)
         self.end_headers()
         self.wfile.write(body)
 
@@ -294,6 +354,8 @@ class _BitbucketHandler(BaseHTTPRequestHandler):
             term = "spell"
             if 'name~"' in query:
                 term = query.split('name~"', 1)[1].split('"', 1)[0]
+            if _rate_limit_response(self, term):
+                return
             page = int(params.get("page", ["1"])[0])
             envelope = {
                 "values": [

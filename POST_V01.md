@@ -237,7 +237,30 @@ are more candidates worth verifying.
 
 ---
 
-## Item 6 — Rate-limit and transient-failure handling with backoff (Priority: MEDIUM)
+## Item 6 — Rate-limit and transient-failure handling with backoff (Priority: MEDIUM) — ✅ IMPLEMENTED (Phase 2, Rotation 8)
+
+> **Status: shipped.** `base.py` now treats a `403`/`429` rate-limit response as
+> "wait and retry" rather than a hard failure. A shared `_request_with_retry`
+> helper backs every GET (`_get`, `_get_absolute`, and the paginator): on a
+> rate-limit status it computes a wait via `_parse_retry_after` — honoring
+> `Retry-After`, then GitHub's `X-RateLimit-Reset` / GitLab's `RateLimit-Reset`
+> reset-epoch headers, then a bounded exponential backoff — sleeps the
+> (clamped to `[0, 60s]`) interval, and retries up to `DEFAULT_MAX_RETRIES`
+> (3). Sleeping is routed through an injectable `_sleep` so tests run instantly.
+> When the budget is exhausted while the server is still throttling, covenant
+> records a non-fatal entry on `client.warnings`; the paginator detects this
+> and stops the walk **cleanly**, preserving the pages gathered so far instead
+> of aborting the run. The CLI surfaces these as a `"warnings"` array in the
+> `recon-repo`/`recon-code` payload (absent on a fully successful run, so its
+> presence is the explicit "recall is partial" signal). Non-rate-limit 4xx
+> (e.g. 404) and 401 are unchanged — they still raise immediately.
+> Mock servers gain a `ratelimit`/`ratelimitforever` query prefix that emits
+> `429`s (recoverable then 200, or forever). Tests: `tests/test_ratelimit.py`
+> covers e2e recovery and budget-exhaustion-with-warnings across all three SCMs,
+> the full `_parse_retry_after` header/clamp/backoff matrix, and
+> `_request_with_retry` retry counting, `max_retries=0`, and the
+> not-retried-404 case. Full suite: 119 tests passing (100 baseline + 19 new),
+> zero regressions. README updated.
 
 ### What
 `base._get` raises `SCMError` on any status ≥ 400, treating a 403/429 rate-limit response
