@@ -281,6 +281,57 @@ def test_github_recon_code_scan_secrets_finding_shape(github_mock, scope_file):
             assert key in f, f"finding missing key {key!r}: {f}"
 
 
+def test_github_recon_code_scan_secrets_redacted_by_default(github_mock, scope_file):
+    """Without --show-secrets, the secret field is a redacted fingerprint."""
+    proc = _run(
+        [
+            "github",
+            "recon-code",
+            "--scope-file",
+            scope_file,
+            "--query",
+            "spell",
+            "--token-env",
+            "COVENANT_TOKEN",
+            "--target-url",
+            github_mock.base_url,
+            "--scan-secrets",
+        ]
+    )
+    assert proc.returncode == 0, proc.stderr
+    # The raw injected key must NOT appear anywhere in the output.
+    assert "AKIAIOSFODNN7EXAMPLE" not in proc.stdout
+    findings = json.loads(proc.stdout)["results"][0]["secret_findings"]
+    aws = next(f for f in findings if f["rule_id"] == "aws-access-key-id")
+    assert aws["secret"].startswith("AKIA"), aws["secret"]
+    assert "sha256:" in aws["secret"]
+
+
+def test_github_recon_code_show_secrets_reveals_raw(github_mock, scope_file):
+    """--show-secrets opts back into the full raw value and implies scanning."""
+    proc = _run(
+        [
+            "github",
+            "recon-code",
+            "--scope-file",
+            scope_file,
+            "--query",
+            "spell",
+            "--token-env",
+            "COVENANT_TOKEN",
+            "--target-url",
+            github_mock.base_url,
+            "--show-secrets",
+        ]
+    )
+    assert proc.returncode == 0, proc.stderr
+    # --show-secrets implies --scan-secrets, so findings appear...
+    findings = json.loads(proc.stdout)["results"][0]["secret_findings"]
+    aws = next(f for f in findings if f["rule_id"] == "aws-access-key-id")
+    # ...and the raw value is present.
+    assert aws["secret"] == "AKIAIOSFODNN7EXAMPLE"
+
+
 def test_github_recon_code_no_scan_secrets_no_findings_key(github_mock, scope_file):
     """Without --scan-secrets, results must NOT have a secret_findings key."""
     proc = _run(

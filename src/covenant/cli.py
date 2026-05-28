@@ -106,6 +106,17 @@ def _build_parser() -> argparse.ArgumentParser:
                 "adds 'secret_findings' to each result"
             ),
         )
+        code.add_argument(
+            "--show-secrets",
+            action="store_true",
+            default=False,
+            help=(
+                "emit the full raw secret value in findings instead of the "
+                "default share-safe redacted fingerprint (implies "
+                "--scan-secrets). Use with care: output may land in logs, "
+                "scrollback, and shared artifacts."
+            ),
+        )
         if scm == "bitbucket":
             code.add_argument(
                 "--workspace",
@@ -176,7 +187,9 @@ def main(argv: list[str] | None = None) -> int:
                 "results": client.recon_repo(args.query, max_pages=max_pages),
             }
         elif args.module == "recon-code":
-            scan_secrets = getattr(args, "scan_secrets", False)
+            # --show-secrets opts into the full raw value and implies scanning.
+            reveal_secrets = getattr(args, "show_secrets", False)
+            scan_secrets = getattr(args, "scan_secrets", False) or reveal_secrets
             # Bitbucket code search is workspace-scoped; surface the workspace
             # kwarg only when talking to Bitbucket so other clients are unchanged.
             code_kwargs: dict = {"max_pages": max_pages}
@@ -190,7 +203,9 @@ def main(argv: list[str] | None = None) -> int:
                 for result in results:
                     fragments = result.pop("fragments", [])
                     try:
-                        result["secret_findings"] = scan_fragments(fragments)
+                        result["secret_findings"] = scan_fragments(
+                            fragments, reveal=reveal_secrets
+                        )
                     except SecretScanUnavailable as exc:
                         print(f"error: {exc}", file=sys.stderr)
                         return EXIT_ERROR
