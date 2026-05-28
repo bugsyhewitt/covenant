@@ -11,6 +11,18 @@ from .base import DEFAULT_MAX_PAGES, BaseSCMClient, SCMError
 _PER_PAGE = 100
 
 
+def _gpg_fingerprint(armor: str | None) -> str | None:
+    """Reduce a GitLab armored GPG public key to a single-line, share-safe
+    prefix. GitLab's GPG-key API returns only the multi-line PGP armor (no
+    explicit fingerprint field), so we collapse all whitespace to single
+    spaces and take a bounded prefix rather than dumping the whole block into
+    the output."""
+    if not armor:
+        return None
+    collapsed = " ".join(armor.split())
+    return collapsed[:64] or None
+
+
 def _gitlab_next(path: str, base_params: dict):
     """Build a ``next_request`` callback that walks GitLab offset pages.
 
@@ -167,6 +179,71 @@ class GitLabClient(BaseSCMClient):
                         "name": name,
                         "url": item.get("web_url")
                         or f"https://gitlab.com/{name}",
+                    }
+                )
+        return results
+
+    def enumerate_keys(self, max_pages: int = DEFAULT_MAX_PAGES) -> list[dict]:
+        """List the SSH and GPG public keys attached to this token's account.
+
+        Walks ``GET /api/v4/user/keys`` (SSH keys) and
+        ``GET /api/v4/user/gpg_keys`` (commit-signing keys) with the shared
+        offset paginator, returning a normalized list of
+        ``{"type", "id", "title", "fingerprint"}`` dicts so the output shape
+        matches the other SCMs' :meth:`enumerate_keys`. Only PUBLIC key metadata
+        is returned — covenant never reads or echoes private key material.
+        """
+        results: list[dict] = []
+
+        ssh_path = "/api/v4/user/keys"
+        ssh_params = {"per_page": _PER_PAGE, "page": 1}
+        for resp in self._get_paginated(
+            ssh_path,
+            params=ssh_params,
+            max_pages=max_pages,
+            next_request=_gitlab_next(ssh_path, ssh_params),
+        ):
+            body = resp.json()
+            if not isinstance(body, list):
+                continue
+            for item in body:
+                key_id = item.get("id")
+                if key_id is None:
+                    continue
+                results.append(
+                    {
+                        "type": "ssh",
+                        "id": key_id,
+                        "title": item.get("title"),
+                        "fingerprint": item.get("fingerprint") or item.get("key"),
+                    }
+                )
+
+        gpg_path = "/api/v4/user/gpg_keys"
+        gpg_params = {"per_page": _PER_PAGE, "page": 1}
+        for resp in self._get_paginated(
+            gpg_path,
+            params=gpg_params,
+            max_pages=max_pages,
+            next_request=_gitlab_next(gpg_path, gpg_params),
+        ):
+            body = resp.json()
+            if not isinstance(body, list):
+                continue
+            for item in body:
+                key_id = item.get("id")
+                if key_id is None:
+                    continue
+                results.append(
+                    {
+                        "type": "gpg",
+                        "id": key_id,
+                        "title": str(key_id),
+                        # GitLab returns only the armored public key; expose a
+                        # short, single-line, share-safe prefix rather than the
+                        # full multi-line PGP block. Collapse all whitespace
+                        # (newlines included) so the fingerprint is one line.
+                        "fingerprint": _gpg_fingerprint(item.get("key")),
                     }
                 )
         return results

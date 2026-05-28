@@ -206,6 +206,35 @@ class _GitHubHandler(BaseHTTPRequestHandler):
                 {"login": "spellcaster", "id": 4242, "site_admin": True},
                 headers={"X-OAuth-Scopes": "repo, read:org, admin:org"},
             )
+        elif parsed.path == "/user/keys":
+            # SSH-key enumeration (--enumerate-keys). Public metadata only.
+            self._json(
+                200,
+                [
+                    {
+                        "id": 1,
+                        "title": "laptop",
+                        "key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA laptop",
+                    },
+                    {
+                        "id": 2,
+                        "title": "ci-runner",
+                        "key": "ssh-rsa AAAAB3NzaC1yc2EAAAADAQAB ci-runner",
+                    },
+                ],
+            )
+        elif parsed.path == "/user/gpg_keys":
+            # GPG signing-key enumeration (--enumerate-keys).
+            self._json(
+                200,
+                [
+                    {
+                        "id": 7,
+                        "key_id": "ABCDEF0123456789",
+                        "name": "release-signing",
+                    },
+                ],
+            )
         elif parsed.path == "/user/orgs":
             # Org/blast-radius enumeration (--enumerate-orgs). Supports the
             # MULTIPAGE_PREFIX is not relevant here (no query); serve a single
@@ -315,6 +344,39 @@ class _GitLabHandler(BaseHTTPRequestHandler):
             self._json(
                 200,
                 {"name": "covenant", "scopes": ["read_api", "read_repository"]},
+            )
+        elif parsed.path == "/api/v4/user/keys":
+            # SSH-key enumeration (--enumerate-keys).
+            self._json(
+                200,
+                [
+                    {
+                        "id": 1,
+                        "title": "laptop",
+                        "key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA laptop",
+                        "fingerprint": "SHA256:abc123laptop",
+                    },
+                    {
+                        "id": 2,
+                        "title": "ci-runner",
+                        "key": "ssh-rsa AAAAB3NzaC1yc2EAAAADAQAB ci",
+                        "fingerprint": "SHA256:def456ci",
+                    },
+                ],
+                headers={"X-Page": "1", "X-Next-Page": "", "X-Total-Pages": "1"},
+            )
+        elif parsed.path == "/api/v4/user/gpg_keys":
+            # GPG signing-key enumeration (--enumerate-keys). GitLab returns
+            # only the armored public key body.
+            self._json(
+                200,
+                [
+                    {
+                        "id": 9,
+                        "key": "-----BEGIN PGP PUBLIC KEY BLOCK-----\nmQ ...armor... \n-----END PGP PUBLIC KEY BLOCK-----",
+                    },
+                ],
+                headers={"X-Page": "1", "X-Next-Page": "", "X-Total-Pages": "1"},
             )
         elif parsed.path == "/api/v4/groups":
             # Group/blast-radius enumeration (--enumerate-orgs).
@@ -465,6 +527,29 @@ class _BitbucketHandler(BaseHTTPRequestHandler):
             self._json(
                 200,
                 {"values": [{"permission": "admin"}]},
+            )
+        elif parsed.path.startswith("/2.0/users/") and parsed.path.endswith(
+            "/ssh-keys"
+        ):
+            # User-scoped SSH-key enumeration (--enumerate-keys). Bitbucket
+            # Cloud has no GPG-key API, so only SSH keys are returned.
+            self._json(
+                200,
+                {
+                    "values": [
+                        {
+                            "uuid": "{key-1}",
+                            "label": "laptop",
+                            "key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA laptop",
+                        },
+                        {
+                            "uuid": "{key-2}",
+                            "label": "ci-runner",
+                            "key": "ssh-rsa AAAAB3NzaC1yc2EAAAADAQAB ci",
+                        },
+                    ],
+                    "size": 2,
+                },
             )
         elif parsed.path == "/2.0/workspaces":
             # Workspace/blast-radius enumeration (--enumerate-orgs).

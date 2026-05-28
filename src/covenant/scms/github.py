@@ -164,6 +164,66 @@ class GitHubClient(BaseSCMClient):
                 )
         return results
 
+    def enumerate_keys(self, max_pages: int = DEFAULT_MAX_PAGES) -> list[dict]:
+        """List the SSH and GPG public keys attached to this token's account.
+
+        Walks ``GET /user/keys`` (SSH authentication keys) and
+        ``GET /user/gpg_keys`` (commit-signing keys) with the shared paginator,
+        returning a normalized list of
+        ``{"type", "id", "title", "fingerprint"}`` dicts. This is a persistence
+        and trust blast-radius signal that complements
+        :meth:`enumerate_orgs`: an account's registered SSH keys reveal which
+        machines can push as this identity, and its GPG keys reveal which keys
+        can produce "Verified" commits in its name. Only PUBLIC key metadata is
+        returned — covenant never reads or echoes private key material (the API
+        does not expose it, and the public-key/armor body is deliberately
+        omitted from the output to keep findings compact and share-safe).
+        """
+        results: list[dict] = []
+        for resp in self._get_paginated(
+            "/user/keys",
+            params={"per_page": 100},
+            max_pages=max_pages,
+            next_request=_next_link,
+        ):
+            body = resp.json()
+            if not isinstance(body, list):
+                continue
+            for item in body:
+                key_id = item.get("id")
+                if key_id is None:
+                    continue
+                results.append(
+                    {
+                        "type": "ssh",
+                        "id": key_id,
+                        "title": item.get("title"),
+                        "fingerprint": item.get("key"),
+                    }
+                )
+        for resp in self._get_paginated(
+            "/user/gpg_keys",
+            params={"per_page": 100},
+            max_pages=max_pages,
+            next_request=_next_link,
+        ):
+            body = resp.json()
+            if not isinstance(body, list):
+                continue
+            for item in body:
+                key_id = item.get("key_id")
+                if not key_id:
+                    continue
+                results.append(
+                    {
+                        "type": "gpg",
+                        "id": key_id,
+                        "title": item.get("name") or item.get("key_id"),
+                        "fingerprint": item.get("key_id"),
+                    }
+                )
+        return results
+
     def validate_token(self) -> dict:
         resp = self._get("/user")
         user = resp.json()

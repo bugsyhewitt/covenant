@@ -192,6 +192,47 @@ class BitbucketClient(BaseSCMClient):
                 )
         return results
 
+    def enumerate_keys(self, max_pages: int = DEFAULT_MAX_PAGES) -> list[dict]:
+        """List the SSH public keys attached to this token's account.
+
+        Bitbucket Cloud's SSH-key endpoint is user-scoped:
+        ``GET /2.0/users/{uuid}/ssh-keys``. We first resolve the authenticated
+        user's UUID via ``GET /2.0/user`` (the same call :meth:`validate_token`
+        uses), then walk the keys with the shared ``next``-envelope paginator,
+        returning a normalized list of ``{"type", "id", "title", "fingerprint"}``
+        dicts so the output shape matches the other SCMs' :meth:`enumerate_keys`.
+
+        Bitbucket Cloud has no public GPG-key API, so only ``ssh`` entries are
+        returned. Only PUBLIC key metadata is exposed — covenant never reads or
+        echoes private key material.
+        """
+        user = self._get("/2.0/user").json()
+        uuid = user.get("uuid")
+        if not uuid:
+            raise SCMError(
+                "cannot enumerate SSH keys: token's user has no UUID"
+            )
+        results: list[dict] = []
+        for resp in self._get_paginated(
+            f"/2.0/users/{uuid}/ssh-keys",
+            params={"pagelen": 100},
+            max_pages=max_pages,
+            next_request=_bitbucket_next,
+        ):
+            for item in resp.json().get("values", []):
+                key_uuid = item.get("uuid")
+                if not key_uuid:
+                    continue
+                results.append(
+                    {
+                        "type": "ssh",
+                        "id": key_uuid,
+                        "title": item.get("label") or item.get("comment"),
+                        "fingerprint": item.get("key"),
+                    }
+                )
+        return results
+
     def validate_token(self) -> dict:
         user = self._get("/2.0/user").json()
         username = user.get("username") or user.get("nickname")

@@ -434,6 +434,63 @@ Example output:
 }
 ```
 
+### SSH/GPG key enumeration (`--enumerate-keys`)
+
+Organizational reach tells you *where* a credential can act; its registered keys
+tell you *how it can persist and impersonate*. Pass `--enumerate-keys` to
+`validate-token` and covenant additionally walks the account's **public** SSH
+and GPG keys with **read-only** key queries and adds a `keys` array to the
+output:
+
+| SCM       | Endpoints walked                                            | Key types |
+|-----------|-------------------------------------------------------------|-----------|
+| GitHub    | `GET /user/keys`, `GET /user/gpg_keys`                      | SSH + GPG |
+| GitLab    | `GET /api/v4/user/keys`, `GET /api/v4/user/gpg_keys`        | SSH + GPG |
+| Bitbucket | `GET /2.0/users/{uuid}/ssh-keys`                            | SSH only  |
+
+Why this matters for recon: an account's registered **SSH keys** reveal which
+machines can push as that identity (a persistence foothold), and its **GPG keys**
+reveal which keys can produce "Verified"-badged commits in its name (a supply-chain
+/ trust signal). Bitbucket Cloud has no public GPG-key API, so only SSH keys are
+returned there.
+
+Each entry is normalized to `{"type", "id", "title", "fingerprint"}` where
+`type` is `"ssh"` or `"gpg"`. **Only public key metadata is emitted** — covenant
+never reads or echoes private key material, and the full public-key/armor body is
+deliberately reduced to a bounded single-line fingerprint to keep findings compact
+and share-safe. The walk is bounded by the same `--max-pages` flag and honors the
+scope guardrail and the automatic rate-limit retry/backoff. Like `--enumerate-orgs`
+the feature is purely additive (the two flags may be combined): without the flag
+the output is unchanged, and with it the v0.1 `scopes`/`user`/`admin` fields are
+untouched — only the `keys` array is added.
+
+```bash
+covenant github validate-token \
+  --scope-file scope.txt \
+  --enumerate-keys \
+  --token-env COVENANT_TOKEN
+```
+
+Example output (combined with `--enumerate-orgs`):
+
+```json
+{
+  "scopes": ["repo", "read:org"],
+  "user": "spellcaster",
+  "admin": false,
+  "token_type": "github-pat-classic",
+  "token_note": "...",
+  "token_type_confidence": "high",
+  "orgs": [
+    { "name": "acme-corp", "url": "https://api.github.com/orgs/acme-corp" }
+  ],
+  "keys": [
+    { "type": "ssh", "id": 1, "title": "laptop", "fingerprint": "ssh-ed25519 AAAA... laptop" },
+    { "type": "gpg", "id": "ABCDEF0123456789", "title": "release-signing", "fingerprint": "ABCDEF0123456789" }
+  ]
+}
+```
+
 ## Usage — one example per SCM
 
 GitHub repo recon:
