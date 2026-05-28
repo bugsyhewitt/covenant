@@ -60,6 +60,18 @@ gitlab.com/acme-corp
 bitbucket.org/acme-corp
 ```
 
+#### Web hosts and API hosts are equivalent
+
+List the **web-facing host** you reason about — `github.com`, `bitbucket.org` —
+not the API subdomain. covenant talks to GitHub's and Bitbucket's REST APIs on
+`api.github.com` / `api.bitbucket.org`, and it canonicalizes those to their web
+host when matching scope, so a scope file listing `github.com` authorizes the
+default GitHub recon run (and likewise for `bitbucket.org`). Listing the `api.*`
+form works too — the two are treated as the same host. GitLab serves its API
+from `gitlab.com` directly, so no aliasing is involved there. This is
+canonicalization only: it never widens scope to a host you did not list, and the
+org/workspace narrowing below still applies against the canonical host.
+
 #### Org/workspace-level scope narrowing
 
 A scope entry may be a **bare host** (`bitbucket.org`) or carry an

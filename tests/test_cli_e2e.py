@@ -104,6 +104,50 @@ def test_github_recon_repo_out_of_scope(scope_file):
     assert "out of scope" in proc.stderr.lower()
 
 
+# --- Default-URL scope guardrail: web-host scope file authorizes the API host -
+
+
+def test_github_default_url_passes_scope_guardrail(scope_file):
+    """A web-host scope file (github.com) must not trip the scope guardrail for
+    the default api.github.com target.
+
+    Regression for the API-host vs web-host mismatch: covenant talks to
+    api.github.com by default, but operators list github.com. Previously this
+    exited 2 (out of scope), making default GitHub recon impossible. The run
+    here has no live server, so it must NOT exit 2 — any other failure (network)
+    is fine; what matters is the scope guardrail let it through.
+    """
+    proc = _run(
+        [
+            "github",
+            "recon-repo",
+            "--scope-file",
+            scope_file,
+            "--query",
+            "spell",
+            # No --target-url: exercise the real default api.github.com.
+        ]
+    )
+    assert proc.returncode != 2, proc.stderr
+    assert "out of scope" not in proc.stderr.lower()
+
+
+def test_bitbucket_default_url_passes_scope_guardrail(scope_file):
+    """bitbucket.org in scope must authorize the default api.bitbucket.org."""
+    proc = _run(
+        [
+            "bitbucket",
+            "recon-repo",
+            "--scope-file",
+            scope_file,
+            "--query",
+            "spell",
+        ]
+    )
+    assert proc.returncode != 2, proc.stderr
+    assert "out of scope" not in proc.stderr.lower()
+
+
 # --- Criterion 5: github validate-token --------------------------------------
 
 
