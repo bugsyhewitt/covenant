@@ -204,6 +204,29 @@ def _build_parser() -> argparse.ArgumentParser:
             "validate-token", help="enumerate what the token can access"
         )
         _add_common_args(token, needs_query=False)
+        token.add_argument(
+            "--enumerate-orgs",
+            action="store_true",
+            default=False,
+            dest="enumerate_orgs",
+            help=(
+                "additionally list the organizations/groups/workspaces this "
+                "token can reach (GitHub orgs, GitLab groups, Bitbucket "
+                "workspaces) via a read-only membership query; adds an "
+                "'orgs' array to the output. Bitbucket workspace slugs feed "
+                "the recon-code --workspace flag."
+            ),
+        )
+        token.add_argument(
+            "--max-pages",
+            type=int,
+            default=DEFAULT_MAX_PAGES,
+            help=(
+                f"maximum org/group/workspace pages to walk when "
+                f"--enumerate-orgs is set (default: {DEFAULT_MAX_PAGES}, "
+                f"hard ceiling: {HARD_MAX_PAGES})."
+            ),
+        )
 
     return parser
 
@@ -348,6 +371,13 @@ def main(argv: list[str] | None = None) -> int:
                 payload["warnings"] = list(client.warnings)
         elif args.module == "validate-token":
             payload = client.validate_token()
+            # Optional org/group/workspace blast-radius enumeration. Read-only,
+            # additive: the v0.1 validate-token fields are untouched and the
+            # 'orgs' array only appears when --enumerate-orgs is requested.
+            if getattr(args, "enumerate_orgs", False):
+                payload["orgs"] = client.enumerate_orgs(max_pages=max_pages)
+                if client.warnings:
+                    payload["warnings"] = list(client.warnings)
         else:  # pragma: no cover - argparse guarantees a valid module
             parser.error(f"unknown module {args.module!r}")
             return EXIT_ERROR

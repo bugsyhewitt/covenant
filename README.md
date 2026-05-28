@@ -387,6 +387,53 @@ Example output:
 }
 ```
 
+### Org/group/workspace enumeration (`--enumerate-orgs`)
+
+Identity, scopes, and token class tell you *what a credential is*; the most
+actionable next recon question is *what it can actually reach*. Pass
+`--enumerate-orgs` to `validate-token` and covenant additionally walks the
+token's organizational blast radius with a **read-only** membership query and
+adds an `orgs` array to the output:
+
+| SCM       | Organizational unit | Endpoint walked            |
+|-----------|---------------------|----------------------------|
+| GitHub    | organizations       | `GET /user/orgs`           |
+| GitLab    | groups              | `GET /api/v4/groups`       |
+| Bitbucket | workspaces          | `GET /2.0/workspaces`      |
+
+Each entry is normalized to `{"name", "url"}`. GitLab groups use their
+`full_path` so nested groups are unambiguous; Bitbucket entries use the
+workspace **slug** — the exact value the `recon-code --workspace` flag wants, so
+this is how you discover which workspaces are searchable. The walk is bounded by
+the same `--max-pages` flag (default 10) and honors the scope guardrail and the
+automatic rate-limit retry/backoff. The feature is purely additive: without the
+flag the output is unchanged, and with it the v0.1 `scopes`/`user`/`admin`
+fields are untouched — only the `orgs` array is added.
+
+```bash
+covenant github validate-token \
+  --scope-file scope.txt \
+  --enumerate-orgs \
+  --token-env COVENANT_TOKEN
+```
+
+Example output:
+
+```json
+{
+  "scopes": ["repo", "read:org"],
+  "user": "spellcaster",
+  "admin": false,
+  "token_type": "github-pat-classic",
+  "token_note": "...",
+  "token_type_confidence": "high",
+  "orgs": [
+    { "name": "acme-corp", "url": "https://api.github.com/orgs/acme-corp" },
+    { "name": "wizards-inc", "url": "https://api.github.com/orgs/wizards-inc" }
+  ]
+}
+```
+
 ## Usage — one example per SCM
 
 GitHub repo recon:
