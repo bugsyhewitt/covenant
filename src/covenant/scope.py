@@ -161,6 +161,18 @@ class Scope:
         host = _canonical_host(host)
         return host in self.orgs and host not in self.host_wide
 
+    def is_url_org_restricted(self, target_url: str) -> bool:
+        """True if ``target_url``'s host is authorized only for specific orgs.
+
+        URL-keyed companion to :meth:`is_host_org_restricted` (which takes a
+        bare host). The CLI uses it to decide whether a recon run that names no
+        ``--org`` on a GitHub/GitLab host must still be refused — an
+        org-restricted host requires an authorized org, exactly as Bitbucket's
+        ``--workspace`` does.
+        """
+        host = _canonical_host(_host_of(target_url))
+        return bool(host) and self.is_host_org_restricted(host)
+
     def is_org_in_scope(self, target_url: str, org: str | None) -> bool:
         """True if ``org`` on ``target_url``'s host is authorized.
 

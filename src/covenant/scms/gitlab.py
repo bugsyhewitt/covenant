@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from urllib.parse import quote
+
 import httpx
 
 from ..tokens import classify_token
@@ -21,6 +23,16 @@ def _gpg_fingerprint(armor: str | None) -> str | None:
         return None
     collapsed = " ".join(armor.split())
     return collapsed[:64] or None
+
+
+def _group_id(group: str) -> str:
+    """URL-encode a GitLab group path for use as a path-id segment.
+
+    GitLab accepts a group's full path (``acme/platform``) as the ``:id``
+    segment of group-scoped endpoints provided it is URL-encoded (the ``/``
+    becomes ``%2F``). A numeric id is left unchanged by encoding.
+    """
+    return quote(group.strip(), safe="")
 
 
 def _gitlab_next(path: str, base_params: dict):
@@ -52,14 +64,31 @@ class GitLabClient(BaseSCMClient):
     def _headers(self) -> dict[str, str]:
         return {"PRIVATE-TOKEN": self.token, "User-Agent": "covenant"}
 
-    def recon_repo(self, query: str, max_pages: int = DEFAULT_MAX_PAGES) -> list[dict]:
-        path = "/api/v4/projects"
-        params = {
-            "search": query,
-            "membership": "true",
-            "per_page": _PER_PAGE,
-            "page": 1,
-        }
+    def recon_repo(
+        self,
+        query: str,
+        max_pages: int = DEFAULT_MAX_PAGES,
+        group: str | None = None,
+    ) -> list[dict]:
+        if group:
+            # Group-scoped project listing: GET /groups/:id/projects narrows the
+            # search to a single group (and its subgroups), the GitLab analogue
+            # of GitHub's ``org:`` qualifier.
+            path = f"/api/v4/groups/{_group_id(group)}/projects"
+            params = {
+                "search": query,
+                "include_subgroups": "true",
+                "per_page": _PER_PAGE,
+                "page": 1,
+            }
+        else:
+            path = "/api/v4/projects"
+            params = {
+                "search": query,
+                "membership": "true",
+                "per_page": _PER_PAGE,
+                "page": 1,
+            }
         results = []
         for resp in self._get_paginated(
             path,
@@ -78,8 +107,19 @@ class GitLabClient(BaseSCMClient):
                 )
         return results
 
-    def recon_code(self, query: str, max_pages: int = DEFAULT_MAX_PAGES) -> list[dict]:
-        path = "/api/v4/search"
+    def recon_code(
+        self,
+        query: str,
+        max_pages: int = DEFAULT_MAX_PAGES,
+        group: str | None = None,
+    ) -> list[dict]:
+        # Group-scoped blob search (GET /groups/:id/search) narrows code recon
+        # to one group; the global /search endpoint is used otherwise.
+        path = (
+            f"/api/v4/groups/{_group_id(group)}/search"
+            if group
+            else "/api/v4/search"
+        )
         params = {
             "scope": "blobs",
             "search": query,
@@ -106,16 +146,24 @@ class GitLabClient(BaseSCMClient):
         return results
 
     def recon_code_with_fragments(
-        self, query: str, max_pages: int = DEFAULT_MAX_PAGES
+        self,
+        query: str,
+        max_pages: int = DEFAULT_MAX_PAGES,
+        group: str | None = None,
     ) -> list[dict]:
         """Code search carrying matched-content fragments for secret scanning.
 
         GitLab's blob search response includes a ``data`` field containing the
         file content excerpt that matched the query.  We expose it as
         ``result["fragments"]`` for the caller to feed to
-        :func:`covenant.secrets.scan_fragments`.
+        :func:`covenant.secrets.scan_fragments`. When ``group`` is supplied the
+        group-scoped search endpoint is used (matching :meth:`recon_code`).
         """
-        path = "/api/v4/search"
+        path = (
+            f"/api/v4/groups/{_group_id(group)}/search"
+            if group
+            else "/api/v4/search"
+        )
         params = {
             "scope": "blobs",
             "search": query,

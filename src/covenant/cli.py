@@ -34,6 +34,16 @@ _MODULES = ("recon-repo", "recon-code", "validate-token")
 #: unchanged) rather than emitting a qualifier the API would misparse.
 _NOT_QUALIFIER_SCMS = frozenset({"github", "gitlab"})
 
+#: SCMs that accept an ``--org`` flag to narrow recon to a single
+#: organization/group. Bitbucket's organizational unit is the *workspace* and
+#: already has its own dedicated ``--workspace`` flag (which is mandatory for
+#: code search), so ``--org`` is offered only for GitHub and GitLab — closing
+#: the same authorization gap ``--workspace`` closes for Bitbucket: when the
+#: scope file authorizes a host only for specific orgs, naming a sibling org
+#: must be refused, and a recon run with no org named on an org-restricted host
+#: must not silently search the whole host.
+_ORG_FLAG_SCMS = frozenset({"github", "gitlab"})
+
 
 def build_query(query: str, excludes: list[str] | None, scm: str) -> str:
     """Append provider-appropriate negative qualifiers to a search query.
@@ -54,6 +64,52 @@ def build_query(query: str, excludes: list[str] | None, scm: str) -> str:
         if term:
             parts.append(f"NOT {term}")
     return " ".join(parts)
+
+
+def apply_org(query: str, org: str | None, scm: str) -> str:
+    """Narrow a search query to a single organization/group.
+
+    When ``--org SLUG`` is supplied, the search is constrained to that org by
+    appending a provider-appropriate qualifier to the query string:
+
+    - **GitHub** code/repo search honors an ``org:<slug>`` qualifier, so we
+      append ``org:<slug>``.
+    - **GitLab**'s global search has no in-query ``org:`` qualifier; group
+      narrowing is done with a separate group-scoped endpoint (handled in the
+      client), so the query string itself is returned unchanged here and the
+      slug is threaded to the client instead. ``apply_org`` therefore only
+      augments the GitHub query.
+
+    The function is pure (no network, no CLI state) so it is unit-testable in
+    isolation. A blank/``None`` org returns the query unchanged. The org slug is
+    appended *after* any ``--exclude`` ``NOT`` qualifiers, matching the order an
+    operator would type by hand.
+    """
+    if not org or not org.strip():
+        return query
+    if scm != "github":
+        return query
+    slug = org.strip()
+    base = query.strip()
+    return f"{base} org:{slug}".strip() if base else f"org:{slug}"
+
+
+def _add_org_arg(parser: argparse.ArgumentParser, scm: str) -> None:
+    """Attach the ``--org`` narrowing flag to a GitHub/GitLab recon parser."""
+    unit = "organization" if scm == "github" else "group"
+    parser.add_argument(
+        "--org",
+        default=None,
+        metavar="SLUG",
+        dest="org",
+        help=(
+            f"narrow recon to a single {scm} {unit} (slug). The {unit} is "
+            "verified against the scope file: if the host is authorized only "
+            "for specific orgs, a different --org is refused (exit 2), and an "
+            "org-restricted host requires --org. Sharpens recall and enforces "
+            "org-level authorization, mirroring Bitbucket's --workspace."
+        ),
+    )
 
 # Lazy import guard: secrets module requires the optional 'scan' extra.
 def _get_scan_fragments():  # noqa: ANN201
@@ -126,9 +182,13 @@ def _build_parser() -> argparse.ArgumentParser:
 
         repo = mod_subs.add_parser("recon-repo", help="search accessible repositories")
         _add_common_args(repo, needs_query=True)
+        if scm in _ORG_FLAG_SCMS:
+            _add_org_arg(repo, scm)
 
         code = mod_subs.add_parser("recon-code", help="search code across repositories")
         _add_common_args(code, needs_query=True)
+        if scm in _ORG_FLAG_SCMS:
+            _add_org_arg(code, scm)
         code.add_argument(
             "--scan-secrets",
             action="store_true",
@@ -273,9 +333,20 @@ def main(argv: list[str] | None = None) -> int:
         # would still let "--workspace victim" through, because only the host
         # was ever checked. Modules that don't name an org are unaffected unless
         # the host itself is org-restricted.
-        target_org = getattr(args, "workspace", None)
         if args.scm == "bitbucket" and args.module == "recon-code":
-            scope.assert_org_in_scope(target_url, target_org)
+            scope.assert_org_in_scope(target_url, getattr(args, "workspace", None))
+        # GitHub/GitLab org narrowing (--org) carries the same authorization
+        # obligation as Bitbucket's --workspace: a recon target that names an
+        # org must be verified against the org-restricted scope, and a target
+        # on an org-restricted host that names NO org must be refused (it would
+        # otherwise search the whole host the operator only partly authorized).
+        elif args.scm in _ORG_FLAG_SCMS and args.module in (
+            "recon-repo",
+            "recon-code",
+        ):
+            target_org = getattr(args, "org", None)
+            if target_org is not None or scope.is_url_org_restricted(target_url):
+                scope.assert_org_in_scope(target_url, target_org)
     except ScopeError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_OUT_OF_SCOPE
@@ -298,13 +369,22 @@ def main(argv: list[str] | None = None) -> int:
     elif max_pages > HARD_MAX_PAGES:
         max_pages = HARD_MAX_PAGES
 
+    # --org narrows GitHub/GitLab recon to a single org/group (already scope-
+    # verified above). GitHub takes an in-query ``org:<slug>`` qualifier;
+    # GitLab uses a group-scoped endpoint, so the slug is passed to the client.
+    org = getattr(args, "org", None)
+
     # 3. Dispatch the module.
     try:
         if args.module == "recon-repo":
+            repo_query = apply_org(args.query, org, args.scm)
+            repo_kwargs: dict = {"max_pages": max_pages}
+            if args.scm == "gitlab" and org:
+                repo_kwargs["group"] = org
             payload = {
                 "scm": args.scm,
                 "query": args.query,
-                "results": client.recon_repo(args.query, max_pages=max_pages),
+                "results": client.recon_repo(repo_query, **repo_kwargs),
             }
             if client.warnings:
                 payload["warnings"] = list(client.warnings)
@@ -321,15 +401,19 @@ def main(argv: list[str] | None = None) -> int:
                 or verify_secrets
             )
             # --exclude appends provider-appropriate NOT qualifiers (Item 7);
-            # the augmented query is what we actually send to the SCM API.
+            # --org appends/threads a single-org narrowing. The augmented query
+            # is what we actually send to the SCM API.
             effective_query = build_query(
                 args.query, getattr(args, "exclude", None), args.scm
             )
+            effective_query = apply_org(effective_query, org, args.scm)
             # Bitbucket code search is workspace-scoped; surface the workspace
             # kwarg only when talking to Bitbucket so other clients are unchanged.
             code_kwargs: dict = {"max_pages": max_pages}
             if args.scm == "bitbucket":
                 code_kwargs["workspace"] = getattr(args, "workspace", None)
+            elif args.scm == "gitlab" and org:
+                code_kwargs["group"] = org
             if scan_secrets:
                 scan_fragments, SecretScanUnavailable = _get_scan_fragments()
                 # Resolve and validate the requested pattern set against the

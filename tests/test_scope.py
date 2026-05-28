@@ -99,6 +99,26 @@ def test_org_out_of_scope_for_host_not_in_scope(tmp_path):
         scope.assert_org_in_scope("https://gitlab.com", "acme")
 
 
+# --- is_url_org_restricted (URL-keyed companion for --org) -------------------
+
+
+def test_is_url_org_restricted_true_for_org_only_host(tmp_path):
+    """A GitHub host listed only with an org is URL-org-restricted."""
+    scope = _scope(tmp_path, "github.com/acme\n")
+    assert scope.is_url_org_restricted("https://api.github.com")
+
+
+def test_is_url_org_restricted_false_for_bare_host(tmp_path):
+    """A bare host entry is host-wide, so not URL-org-restricted."""
+    scope = _scope(tmp_path, "github.com\n")
+    assert not scope.is_url_org_restricted("https://api.github.com")
+
+
+def test_is_url_org_restricted_false_for_unlisted_host(tmp_path):
+    scope = _scope(tmp_path, "github.com/acme\n")
+    assert not scope.is_url_org_restricted("https://gitlab.com")
+
+
 # --- API-host ⇄ web-host canonicalization ------------------------------------
 
 
