@@ -205,6 +205,8 @@ def main(argv: list[str] | None = None) -> int:
                 "query": args.query,
                 "results": client.recon_repo(args.query, max_pages=max_pages),
             }
+            if client.warnings:
+                payload["warnings"] = list(client.warnings)
         elif args.module == "recon-code":
             # --show-secrets opts into the full raw value and implies scanning.
             # --verify-secrets implies scanning too, and needs the raw secret to
@@ -249,6 +251,8 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 results = client.recon_code(args.query, **code_kwargs)
             payload = {"scm": args.scm, "query": args.query, "results": results}
+            if client.warnings:
+                payload["warnings"] = list(client.warnings)
         elif args.module == "validate-token":
             payload = client.validate_token()
         else:  # pragma: no cover - argparse guarantees a valid module

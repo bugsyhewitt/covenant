@@ -11,6 +11,7 @@ byte-for-byte identical, which is what the ephemeral-port smoke tests exercise.]
 
 from __future__ import annotations
 
+import time
 from collections.abc import Callable
 
 import httpx
@@ -22,22 +23,137 @@ DEFAULT_MAX_PAGES = 10
 #: cap. The CLI clamps ``--max-pages`` to this value.
 HARD_MAX_PAGES = 100
 
+#: Default number of retry attempts for a rate-limited (403/429) response
+#: before covenant gives up on that request. The original attempt is not
+#: counted, so a value of 3 means up to 4 total GETs for one logical request.
+DEFAULT_MAX_RETRIES = 3
+#: Hard cap on how long covenant will honor a server-supplied retry interval.
+#: A hostile or misconfigured API can advertise an enormous ``Retry-After``;
+#: we never sleep longer than this regardless of what the header claims.
+MAX_BACKOFF_SECONDS = 60.0
+#: Base interval for the exponential backoff used when the server gives no
+#: explicit retry hint: attempt N sleeps ``BASE_BACKOFF_SECONDS * 2**N``.
+BASE_BACKOFF_SECONDS = 1.0
+
+#: HTTP status codes covenant treats as "rate-limited, retry after a wait"
+#: rather than a hard failure. 429 is the standard; GitHub's search API also
+#: signals secondary rate limits with 403 + a ``Retry-After`` header.
+_RATE_LIMIT_STATUSES = frozenset({403, 429})
+
 
 class SCMError(Exception):
     """Raised when an SCM API call fails or returns an unexpected shape."""
+
+
+def _parse_retry_after(resp: httpx.Response, attempt: int) -> float:
+    """Return how many seconds to wait before retrying a rate-limited response.
+
+    Honors, in priority order, the standard ``Retry-After`` header (an integer
+    number of seconds), then the reset-epoch headers that GitHub
+    (``X-RateLimit-Reset``) and GitLab (``RateLimit-Reset``) return, computing
+    the delta from now. If none is present or parseable, falls back to a bounded
+    exponential backoff keyed on the attempt number. The result is always
+    clamped to ``[0, MAX_BACKOFF_SECONDS]`` so a malicious or buggy server can
+    never make covenant sleep unboundedly.
+    """
+    headers = resp.headers
+    raw_after = headers.get("Retry-After") or headers.get("retry-after")
+    if raw_after:
+        try:
+            return min(max(float(raw_after.strip()), 0.0), MAX_BACKOFF_SECONDS)
+        except ValueError:
+            pass  # fall through to reset headers / backoff
+
+    for key in ("X-RateLimit-Reset", "RateLimit-Reset", "ratelimit-reset"):
+        raw_reset = headers.get(key)
+        if raw_reset:
+            try:
+                reset_epoch = float(raw_reset.strip())
+            except ValueError:
+                continue
+            delta = reset_epoch - time.time()
+            return min(max(delta, 0.0), MAX_BACKOFF_SECONDS)
+
+    backoff = BASE_BACKOFF_SECONDS * (2 ** max(attempt, 0))
+    return min(backoff, MAX_BACKOFF_SECONDS)
 
 
 class BaseSCMClient:
     #: Default API base URL for the live service; overridden by --target-url.
     default_base_url: str = ""
 
-    def __init__(self, token: str, base_url: str | None = None, timeout: float = 15.0):
+    def __init__(
+        self,
+        token: str,
+        base_url: str | None = None,
+        timeout: float = 15.0,
+        *,
+        max_retries: int = DEFAULT_MAX_RETRIES,
+    ):
         self.token = token
         self.base_url = (base_url or self.default_base_url).rstrip("/")
         self._timeout = timeout
+        self._max_retries = max(int(max_retries), 0)
+        #: Non-fatal warnings accumulated during a run (e.g. a retry budget was
+        #: exhausted mid-walk, truncating recall). The CLI surfaces these in the
+        #: payload's ``warnings`` array so the operator knows results may be
+        #: partial rather than complete. Reset per logical operation by the CLI.
+        self.warnings: list[str] = []
 
     def _headers(self) -> dict[str, str]:
         raise NotImplementedError
+
+    def _sleep(self, seconds: float) -> None:
+        """Indirection over :func:`time.sleep` so tests can run without real
+        wall-clock delays while still asserting that a backoff occurred."""
+        if seconds > 0:
+            time.sleep(seconds)
+
+    def _request_with_retry(
+        self,
+        url: str,
+        params: dict | None,
+        headers: dict,
+    ) -> httpx.Response:
+        """Issue a GET, retrying 403/429 rate-limit responses with backoff.
+
+        On a rate-limited status covenant reads the server's retry hint (see
+        :func:`_parse_retry_after`), sleeps the (clamped) interval, and retries
+        up to ``self._max_retries`` times. If the budget is exhausted while the
+        server is still rate-limiting, a non-fatal warning is appended to
+        ``self.warnings`` and the last rate-limited response is returned so the
+        caller's normal ``status >= 400`` handling raises a clear error — unless
+        the caller is the paginator, which checks ``warnings`` to stop cleanly
+        and keep the partial results gathered so far.
+        """
+        attempt = 0
+        while True:
+            try:
+                resp = httpx.get(
+                    url,
+                    params=params,
+                    headers=headers,
+                    timeout=self._timeout,
+                )
+            except httpx.HTTPError as exc:  # network-level failure
+                raise SCMError(f"request to {url} failed: {exc}") from exc
+
+            if resp.status_code in _RATE_LIMIT_STATUSES and attempt < self._max_retries:
+                wait = _parse_retry_after(resp, attempt)
+                self._sleep(wait)
+                attempt += 1
+                continue
+
+            if resp.status_code in _RATE_LIMIT_STATUSES and attempt >= self._max_retries:
+                # Budget exhausted while still throttled — record it so the
+                # operator learns recall may be truncated, then let the caller
+                # decide (paginator stops cleanly; single GET raises).
+                self.warnings.append(
+                    f"rate limited (HTTP {resp.status_code}) at {url}: retry "
+                    f"budget of {self._max_retries} exhausted; results may be "
+                    "partial"
+                )
+            return resp
 
     def _get(
         self,
@@ -47,15 +163,7 @@ class BaseSCMClient:
     ) -> httpx.Response:
         url = f"{self.base_url}{path}"
         headers = {**self._headers(), **(extra_headers or {})}
-        try:
-            resp = httpx.get(
-                url,
-                params=params,
-                headers=headers,
-                timeout=self._timeout,
-            )
-        except httpx.HTTPError as exc:  # network-level failure
-            raise SCMError(f"request to {url} failed: {exc}") from exc
+        resp = self._request_with_retry(url, params, headers)
         if resp.status_code == 401:
             raise SCMError("authentication failed (401) — check the token")
         if resp.status_code >= 400:
@@ -105,10 +213,28 @@ class BaseSCMClient:
         next_params = params
         pages = 0
         while next_path is not None and pages < max_pages:
+            headers = {**self._headers(), **(extra_headers or {})}
             if next_path.startswith(("http://", "https://")):
-                resp = self._get_absolute(next_path, next_params, extra_headers)
+                url = next_path
             else:
-                resp = self._get(next_path, next_params, extra_headers)
+                url = f"{self.base_url}{next_path}"
+            warnings_before = len(self.warnings)
+            resp = self._request_with_retry(url, next_params, headers)
+            if resp.status_code == 401:
+                raise SCMError("authentication failed (401) — check the token")
+            if resp.status_code in _RATE_LIMIT_STATUSES and len(self.warnings) > warnings_before:
+                # Retry budget exhausted while the server is still throttling.
+                # Stop the walk cleanly: the pages already yielded are kept and
+                # the warning recorded by ``_request_with_retry`` tells the
+                # operator recall is partial, not complete. This is the key
+                # difference from a one-shot ``_get`` (which raises) — a recon
+                # walk that dies on the first 429 would discard everything it
+                # had already gathered.
+                break
+            if resp.status_code >= 400:
+                raise SCMError(
+                    f"{url} returned HTTP {resp.status_code}"
+                )
             pages += 1
             yield resp
             advance = next_request(resp)
@@ -129,15 +255,7 @@ class BaseSCMClient:
         path against ``base_url``.
         """
         headers = {**self._headers(), **(extra_headers or {})}
-        try:
-            resp = httpx.get(
-                url,
-                params=params,
-                headers=headers,
-                timeout=self._timeout,
-            )
-        except httpx.HTTPError as exc:  # network-level failure
-            raise SCMError(f"request to {url} failed: {exc}") from exc
+        resp = self._request_with_retry(url, params, headers)
         if resp.status_code == 401:
             raise SCMError("authentication failed (401) — check the token")
         if resp.status_code >= 400:
