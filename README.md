@@ -80,6 +80,28 @@ the SCM's code-search API for leaked credentials. Results gain a
 `"secret_findings"` array; each finding has `rule_id`, `description`,
 `secret`, `start`, `end`, and `fragment_index`.
 
+**By default the `secret` field is redacted.** Recon output routinely lands in
+engagement logs, terminal scrollback, shell pipelines, and shared report
+artifacts — so emitting a live credential verbatim would make covenant's own
+output a new place that secret leaks to. Instead, the `secret` field is a
+share-safe fingerprint: a short type-revealing prefix, the length, and a
+truncated SHA-256, e.g. `"AKIA…[20 chars, sha256:9f3a]"`. The prefix still
+encodes the credential type (`AKIA`, `ghp_`, `sk_l`, …) and the hash lets you
+correlate duplicate findings, but the live value never appears.
+
+For the rare case where you genuinely need the raw value (e.g. immediate
+verification), pass `--show-secrets` to opt back into the full credential.
+`--show-secrets` implies `--scan-secrets`. Use it deliberately — its output is
+unsafe to paste into shared artifacts.
+
+```bash
+# Default: redacted fingerprints
+covenant github recon-code --scope-file scope.txt --query "api_key" --scan-secrets
+
+# Opt in to full raw secrets (handle with care)
+covenant github recon-code --scope-file scope.txt --query "api_key" --show-secrets
+```
+
 Powered by
 [necromancer-patterns](https://github.com/bugsyhewitt/necromancer-patterns) —
 the suite-wide shared credential-detection library. Rules currently cover:
@@ -100,7 +122,7 @@ covenant github recon-code \
   --scan-secrets
 ```
 
-Example output with a finding:
+Example output with a finding (default redacted `secret`):
 
 ```json
 {
@@ -117,7 +139,7 @@ Example output with a finding:
         {
           "rule_id": "aws-access-key-id",
           "description": "AWS access key ID",
-          "secret": "AKIAIOSFODNN7EXAMPLE",
+          "secret": "AKIA…[20 chars, sha256:9f3a]",
           "start": 17,
           "end": 37,
           "fragment_index": 0

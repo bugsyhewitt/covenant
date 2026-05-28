@@ -16,22 +16,63 @@ Usage::
 
 from __future__ import annotations
 
+import hashlib
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     pass
+
+# Number of leading characters of a secret preserved in the redacted
+# fingerprint. The prefix encodes the credential type (e.g. ``AKIA``,
+# ``ghp_``, ``sk_l``) so an operator can still tell what *kind* of credential
+# a finding is without exposing the live value.
+_PREFIX_LEN = 4
+
+# Number of hex chars of the SHA-256 digest kept in the fingerprint. Enough to
+# correlate identical secrets across findings without being reversible.
+_HASH_LEN = 4
 
 
 class SecretScanUnavailable(Exception):
     """Raised when necromancer-patterns is not installed."""
 
 
-def scan_fragments(fragments: list[str]) -> list[dict]:
+def redact(secret: str) -> str:
+    """Return a share-safe fingerprint of a discovered secret.
+
+    The fingerprint keeps a short prefix (which encodes the credential type),
+    the secret's length, and a truncated SHA-256 digest -- enough for an
+    operator to recognize the credential type and correlate duplicate findings,
+    but not enough to reconstruct the live value. For example::
+
+        redact("AKIAIOSFODNN7EXAMPLE")
+        # 'AKIA…[20 chars, sha256:9f3a]'
+
+    Secrets shorter than the preserved prefix are kept whole (there is nothing
+    meaningful to hide), and an empty string redacts to an empty string.
+    """
+    if not secret:
+        return ""
+    digest = hashlib.sha256(secret.encode("utf-8")).hexdigest()[:_HASH_LEN]
+    length = len(secret)
+    if length <= _PREFIX_LEN:
+        prefix = secret
+    else:
+        prefix = secret[:_PREFIX_LEN]
+    return f"{prefix}…[{length} chars, sha256:{digest}]"
+
+
+def scan_fragments(fragments: list[str], *, reveal: bool = False) -> list[dict]:
     """Scan a list of text fragments for credential patterns.
 
     Returns a flat list of finding dicts (one per match across all fragments).
     Each dict has keys: ``rule_id``, ``description``, ``secret``,
     ``start``, ``end``, ``fragment_index``.
+
+    By default the ``secret`` field is redacted to a share-safe fingerprint
+    (see :func:`redact`) so covenant's own output never becomes a new place a
+    live credential leaks to. Pass ``reveal=True`` to emit the full raw secret
+    value -- only do this when the operator has explicitly opted in.
 
     Raises :class:`SecretScanUnavailable` if ``necromancer-patterns`` is not
     installed in the current environment.
@@ -49,5 +90,7 @@ def scan_fragments(fragments: list[str]) -> list[dict]:
         for m in match(fragment):
             d = m.to_dict()
             d["fragment_index"] = idx
+            if not reveal:
+                d["secret"] = redact(d.get("secret", ""))
             results.append(d)
     return results

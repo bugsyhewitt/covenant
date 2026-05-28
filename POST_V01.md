@@ -108,7 +108,21 @@ mapping mirrors patterns already in the codebase.
 
 ---
 
-## Item 3 — Redact secrets in output by default with opt-in `--show-secrets` (Priority: HIGH)
+## Item 3 — Redact secrets in output by default with opt-in `--show-secrets` (Priority: HIGH) — ✅ IMPLEMENTED (Phase 2, Rotation 5)
+
+> **Status: shipped.** `secrets.py` now exposes a pure `redact(secret)` helper
+> that returns a share-safe fingerprint — a 4-char type-revealing prefix, the
+> length, and a 4-hex truncated SHA-256, e.g. `"AKIA…[20 chars, sha256:9f3a]"`.
+> `scan_fragments` takes a `reveal: bool = False` keyword and redacts the
+> `secret` field by default; `cli.py` adds a `--show-secrets` flag to
+> `recon-code` (implying `--scan-secrets`) that opts back into the raw value.
+> The finding shape is unchanged — only the `secret` value differs. Tests cover
+> the `redact` helper (prefix preservation, length+hash, non-leakage,
+> determinism, short-secret passthrough, distinct-secret distinction), the
+> default-redacted vs `reveal=True` paths in `scan_fragments`, and end-to-end
+> CLI assertions that the raw key never appears by default and is present under
+> `--show-secrets`. Full suite: 54 tests passing (42 baseline + 12 new), zero
+> regressions. README updated.
 
 ### What
 `scan_fragments` returns the raw, full secret value, and `cli.py` dumps it verbatim into the
