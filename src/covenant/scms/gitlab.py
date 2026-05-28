@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import httpx
 
+from ..tokens import classify_token
 from .base import DEFAULT_MAX_PAGES, BaseSCMClient, SCMError
 
 #: GitLab offset pagination page size — the API cap is 100 per page.
@@ -144,8 +145,12 @@ class GitLabClient(BaseSCMClient):
         except SCMError:
             # Older GitLab / token types may not expose this endpoint.
             scopes = []
+        fingerprint = classify_token(self.token, "gitlab")
         return {
             "scopes": scopes,
             "user": username,
             "admin": bool(user.get("is_admin", False)),
+            "token_type": fingerprint["token_type"],
+            "token_note": fingerprint["note"],
+            "token_type_confidence": fingerprint["confidence"],
         }

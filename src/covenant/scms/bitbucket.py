@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import httpx
 
+from ..tokens import classify_token
 from .base import DEFAULT_MAX_PAGES, BaseSCMClient, SCMError
 
 
@@ -176,4 +177,12 @@ class BitbucketClient(BaseSCMClient):
                     admin = True
         except SCMError:
             scopes = []
-        return {"scopes": scopes, "user": username, "admin": admin}
+        fingerprint = classify_token(self.token, "bitbucket")
+        return {
+            "scopes": scopes,
+            "user": username,
+            "admin": admin,
+            "token_type": fingerprint["token_type"],
+            "token_note": fingerprint["note"],
+            "token_type_confidence": fingerprint["confidence"],
+        }

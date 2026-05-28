@@ -151,7 +151,23 @@ self-inflicted leakage hazard. High value because it changes a default that is q
 
 ---
 
-## Item 4 — Token-type fingerprinting in validate-token (Priority: HIGH)
+## Item 4 — Token-type fingerprinting in validate-token (Priority: HIGH) — ✅ IMPLEMENTED (Phase 2, Rotation 6)
+
+> **Status: shipped.** A new pure, offline `covenant/tokens.py` exposes
+> `classify_token(token, scm)` that fingerprints a credential's *type* from its
+> prefix taxonomy — GitHub `ghp_`/`gho_`/`ghu_`/`ghs_`/`ghr_`/`github_pat_`/
+> legacy-40-hex, GitLab `glpat-`/`gloas-`/`glptt-`, Bitbucket API token
+> (`ATCTT`) vs the deprecated app-password form (`ATBB`) — and returns a
+> `token_type` label, a blast-radius `note`, and a `confidence` band, never
+> echoing the raw token. All three clients' `validate_token()` now merge
+> `token_type`, `token_note`, and `token_type_confidence` into their payloads
+> (v0.1 `scopes`/`user`/`admin` fields untouched, the new fields are purely
+> additive). The GitLab note carries the scopes-AND-roles caveat so a permissive
+> scope list isn't over-read. Tests: `tests/test_tokens.py` covers the full
+> prefix table, the empty/whitespace/unknown-scm edges, confidence banding, and
+> the no-raw-token-leak invariant; e2e tests assert the field appears end-to-end
+> for all three SCMs. Full suite: 80 tests passing (54 baseline + 26 new), zero
+> regressions. README updated.
 
 ### What
 `validate-token` reports `scopes`, `user`, and `admin`, but never tells the operator *what
