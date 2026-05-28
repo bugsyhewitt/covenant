@@ -75,7 +75,18 @@ tool only ever sees page one.
 
 ---
 
-## Item 2 — Real Bitbucket code search (Priority: HIGH)
+## Item 2 — Real Bitbucket code search (Priority: HIGH) — ✅ IMPLEMENTED (Phase 2, Rotation 9)
+
+> **Status: shipped.** `BitbucketClient.recon_code` /
+> `recon_code_with_fragments` now hit the workspace-scoped
+> `GET /2.0/workspaces/{workspace}/search/code` endpoint instead of aliasing
+> repo search. The workspace is supplied via a `--workspace <slug>` flag
+> (required for Bitbucket `recon-code`; absent → clear `SCMError`, never a
+> silent fallback). Response `values[].file.path` maps to covenant's standard
+> code-result shape, and `content_matches[].lines[].segments[].text` is exposed
+> as `fragments` so `--scan-secrets` works on Bitbucket exactly as on
+> GitHub/GitLab. Mirrored parity tests cover the success path, the
+> no-workspace error, and the secret-scan finding shape.
 
 ### What
 `BitbucketClient.recon_code` is a stub: it calls `recon_repo` and returns repositories, not
@@ -318,6 +329,52 @@ Targeted precision tuning that leans entirely on capabilities already present in
 `necromancer-patterns` and the SCM search APIs, so complexity is low. Medium signal: it sharpens
 an existing feature rather than adding a new one, which is why it ranks last — valuable polish
 once the recall, correctness, safety, and reliability items above are in place.
+
+---
+
+## Item 8 — Org/workspace-level scope narrowing (Priority: HIGH) — ✅ IMPLEMENTED (Phase 2, Rotation 10)
+
+> **Status: shipped.** `Scope` now retains the org/group/workspace path from
+> each scope entry instead of discarding everything after the host. A host that
+> appears as a bare entry stays **host-wide** (v0.1 behavior preserved — loopback
+> test hosts and `github.com`/`bitbucket.org` bare entries authorize any org); a
+> host that appears *only* with org paths becomes **org-restricted** and refuses
+> targets in a sibling org. New `Scope.is_org_in_scope` / `assert_org_in_scope`
+> (and `is_host_org_restricted`) implement this, and the CLI wires the Bitbucket
+> `--workspace` slug through `assert_org_in_scope` before any token is read,
+> returning exit code 2 for an out-of-scope workspace. Tests: 7 unit tests in
+> `tests/test_scope.py` (host-wide passthrough, org restriction, unnamed-org
+> refusal, bare-entry override, case-insensitive match, multi-org, host-not-in-
+> scope) plus 3 e2e CLI tests (workspace refused, workspace allowed, bare host
+> authorizes any workspace). Full suite: 150 tests passing (140 baseline + 10
+> new), zero regressions. README updated.
+
+### What
+covenant's central safety contract is "refuse any target you're not authorized
+to test," but the scope guardrail matched **host-only**. The scope-file format
+documents and encourages org-qualified entries (`github.com/acme-corp`,
+`bitbucket.org/acme`), yet `scope.py` parsed the org segment and threw it away —
+so listing `bitbucket.org/acme` authorized the *entire* `bitbucket.org` host.
+Combined with Item 2's workspace-scoped Bitbucket code search, this was a
+concrete authorization bypass: an operator scoped to `bitbucket.org/acme` could
+run `recon-code --workspace victim` and covenant would search the victim
+workspace, because only the host (`api.bitbucket.org`) was ever checked against
+scope.
+
+### How
+Retain per-host org sets when loading the scope file. A host is "org-restricted"
+iff it has explicit org entries and never appeared bare. Add
+`is_org_in_scope(target_url, org)` / `assert_org_in_scope(...)` that pass any org
+on a host-wide host (backward compatible) but refuse an unlisted org (and refuse
+an unnamed org) on an org-restricted host. Wire the Bitbucket `--workspace` slug
+through this check in the CLI's scope-guardrail block, before the token is read,
+preserving the existing exit-code-2 semantics.
+
+### Rationale
+Highest-value remaining item: it hardens the tool's defining guarantee and
+removes a real, demonstrable bypass, at low complexity (pure offline string
+logic in one module plus one CLI call site) with zero new dependencies and full
+backward compatibility for the common bare-host scope file.
 
 ---
 

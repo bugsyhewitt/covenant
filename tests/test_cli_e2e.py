@@ -731,3 +731,91 @@ def test_recon_code_help_lists_item7_flags(github_mock, scope_file):
     assert proc.returncode == 0
     assert "--pattern-set" in proc.stdout
     assert "--exclude" in proc.stdout
+
+
+# --- Item 8: org/workspace-level scope narrowing -----------------------------
+
+
+def _org_scope_file(tmp_path, line: str) -> str:
+    """Write a scope file authorizing the loopback host only for one org."""
+    f = tmp_path / "org_scope.txt"
+    f.write_text(line + "\n")
+    return str(f)
+
+
+def test_bitbucket_workspace_out_of_scope_refused(bitbucket_mock, tmp_path):
+    """An org-restricted host refuses a --workspace naming a different org.
+
+    The scope file authorizes the loopback host only for the 'acme' workspace.
+    Searching '--workspace victim' must exit 2 (out of scope) and make no
+    network call — the host alone is no longer sufficient authorization.
+    """
+    scope = _org_scope_file(tmp_path, "127.0.0.1/acme")
+    proc = _run(
+        [
+            "bitbucket",
+            "recon-code",
+            "--scope-file",
+            scope,
+            "--query",
+            "spell",
+            "--token-env",
+            "COVENANT_TOKEN",
+            "--target-url",
+            bitbucket_mock.base_url,
+            "--workspace",
+            "victim",
+        ]
+    )
+    assert proc.returncode == 2, (proc.returncode, proc.stderr)
+    assert "victim" in proc.stderr
+    assert "scope" in proc.stderr.lower()
+
+
+def test_bitbucket_workspace_in_scope_allowed(bitbucket_mock, tmp_path):
+    """The authorized workspace on an org-restricted host is allowed."""
+    scope = _org_scope_file(tmp_path, "127.0.0.1/acme")
+    proc = _run(
+        [
+            "bitbucket",
+            "recon-code",
+            "--scope-file",
+            scope,
+            "--query",
+            "spell",
+            "--token-env",
+            "COVENANT_TOKEN",
+            "--target-url",
+            bitbucket_mock.base_url,
+            "--workspace",
+            "acme",
+        ]
+    )
+    assert proc.returncode == 0, proc.stderr
+    payload = json.loads(proc.stdout)
+    assert "results" in payload
+
+
+def test_bare_host_authorizes_any_workspace(bitbucket_mock, scope_file):
+    """A bare host entry (the shared fixture) authorizes any workspace.
+
+    This proves backward compatibility: the v0.1 host-wide scope model is
+    unchanged when no org path is listed.
+    """
+    proc = _run(
+        [
+            "bitbucket",
+            "recon-code",
+            "--scope-file",
+            scope_file,
+            "--query",
+            "spell",
+            "--token-env",
+            "COVENANT_TOKEN",
+            "--target-url",
+            bitbucket_mock.base_url,
+            "--workspace",
+            "any-workspace-at-all",
+        ]
+    )
+    assert proc.returncode == 0, proc.stderr

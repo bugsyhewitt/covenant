@@ -60,6 +60,34 @@ gitlab.com/acme-corp
 bitbucket.org/acme-corp
 ```
 
+#### Org/workspace-level scope narrowing
+
+A scope entry may be a **bare host** (`bitbucket.org`) or carry an
+**org/group/workspace path** (`bitbucket.org/acme-corp`). The path is no longer
+discarded:
+
+- If a host appears as a bare entry anywhere, it stays **host-wide** — any org
+  on it is authorized (this is the original v0.1 behavior, unchanged).
+- If a host appears **only** with org paths, covenant treats it as
+  **org-restricted**: a recon target that names a *different* org on that host
+  is refused with exit code `2`, even though the host itself is listed.
+
+This closes a real authorization gap. Bitbucket code search is workspace-scoped
+(`recon-code --workspace <slug>`); previously, listing `bitbucket.org/acme` and
+then running `--workspace victim` would happily search the `victim` workspace,
+because only the *host* (`api.bitbucket.org`) was ever checked. Now the
+`--workspace` slug is verified against the authorized orgs for the host.
+
+```
+# Org-restricted: only the acme workspace on bitbucket.org is authorized
+bitbucket.org/acme
+
+# --workspace acme   → allowed
+# --workspace victim → refused (exit 2), even though bitbucket.org is "listed"
+```
+
+To authorize an entire host regardless of org, list it bare (`bitbucket.org`).
+
 ## Modules
 
 Each SCM exposes the same read-only modules:
