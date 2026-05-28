@@ -228,6 +228,16 @@ def main(argv: list[str] | None = None) -> int:
     try:
         scope = Scope.from_file(args.scope_file)
         scope.assert_in_scope(target_url)
+        # Org-level narrowing: when the operator can name the org/workspace a
+        # recon target lands in (Bitbucket code search is workspace-scoped) and
+        # the host was authorized only for specific orgs, refuse a sibling org
+        # on the same host. Without this an entry like "bitbucket.org/acme"
+        # would still let "--workspace victim" through, because only the host
+        # was ever checked. Modules that don't name an org are unaffected unless
+        # the host itself is org-restricted.
+        target_org = getattr(args, "workspace", None)
+        if args.scm == "bitbucket" and args.module == "recon-code":
+            scope.assert_org_in_scope(target_url, target_org)
     except ScopeError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_OUT_OF_SCOPE
