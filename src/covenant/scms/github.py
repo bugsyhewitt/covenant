@@ -827,6 +827,57 @@ class GitHubClient(BaseSCMClient):
                     )
         return results
 
+    def scan_commits(self, max_pages: int = DEFAULT_MAX_PAGES) -> list[dict]:
+        """Collect commit metadata + messages from the repos this token reaches.
+
+        Commit *messages* are a notorious, much-overlooked secret-leak vector —
+        the credential that was scrubbed from a tracked file routinely survives
+        verbatim in the ``git commit -m "fix: rotate to AKIA..."`` line, in a
+        merge/revert body that quotes a diff, or in an automated bump commit that
+        echoes a token. covenant's ``--scan-secrets`` only ever sees the *current*
+        file content the code-search API returns; this is the recon analogue for
+        the *history*: it walks the recent commits the token can read and surfaces
+        each commit's message text so the caller can scan it for credentials with
+        the same :func:`covenant.secrets.scan_fragments` machinery.
+
+        Walks the repositories the token can reach (``GET /user/repos``) and, for
+        each, lists ``GET /repos/{owner}/{repo}/commits`` (newest first), returning
+        one normalized ``{"repo", "sha", "author", "message"}`` record per commit.
+        ``author`` is the commit author's login/name (identity only — never an
+        email) and ``message`` is the raw commit message the CLI feeds to the
+        secret scanner; the commit *diff/patch* is never fetched, so covenant maps
+        the leak surface in history without dumping repository content. Read-only.
+        """
+        results: list[dict] = []
+        for full_name in self._reachable_repos(max_pages=max_pages):
+            for resp in self._get_paginated(
+                f"/repos/{full_name}/commits",
+                params={"per_page": 100},
+                max_pages=max_pages,
+                next_request=_next_link,
+            ):
+                body = resp.json()
+                if not isinstance(body, list):
+                    continue
+                for item in body:
+                    sha = item.get("sha")
+                    if not sha:
+                        continue
+                    commit = item.get("commit") or {}
+                    author_obj = commit.get("author") or {}
+                    # Prefer the GitHub account login (identity), falling back to
+                    # the git author name; the email is deliberately never read.
+                    login = (item.get("author") or {}).get("login")
+                    results.append(
+                        {
+                            "repo": full_name,
+                            "sha": sha,
+                            "author": login or author_obj.get("name"),
+                            "message": commit.get("message", ""),
+                        }
+                    )
+        return results
+
     def validate_token(self) -> dict:
         resp = self._get("/user")
         user = resp.json()

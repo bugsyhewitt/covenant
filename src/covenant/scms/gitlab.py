@@ -987,6 +987,57 @@ class GitLabClient(BaseSCMClient):
                     )
         return results
 
+    def scan_commits(self, max_pages: int = DEFAULT_MAX_PAGES) -> list[dict]:
+        """Collect commit metadata + messages from the projects this token reaches.
+
+        The GitLab analogue of GitHub commit-history scanning. Commit *messages*
+        are a notorious secret-leak vector: a credential scrubbed from a tracked
+        file routinely survives verbatim in the commit subject/body, in a
+        revert/merge message quoting a diff, or in an automated bump commit. Where
+        ``--scan-secrets`` only sees the *current* blob content the search API
+        returns, this maps the leak surface in *history*: it walks the recent
+        commits the token can read and surfaces each commit's message for the
+        caller to scan with the same :func:`covenant.secrets.scan_fragments`
+        machinery.
+
+        Walks the projects the token is a member of
+        (``GET /api/v4/projects?membership=true``) and, for each, lists
+        ``GET /api/v4/projects/{id}/repository/commits`` (newest first), returning
+        one normalized ``{"repo", "sha", "author", "message"}`` record per commit.
+        ``author`` is the commit's ``author_name`` (identity only — the
+        ``author_email`` is deliberately never read) and ``message`` is the raw
+        commit message; the commit *diff* is never fetched. Read-only.
+        """
+        results: list[dict] = []
+        for project in self._reachable_projects(max_pages=max_pages):
+            project_id = project["id"]
+            repo = project["repo"]
+            path = f"/api/v4/projects/{project_id}/repository/commits"
+            params = {"per_page": _PER_PAGE, "page": 1}
+            for resp in self._get_paginated(
+                path,
+                params=params,
+                max_pages=max_pages,
+                next_request=_gitlab_next(path, params),
+            ):
+                body = resp.json()
+                if not isinstance(body, list):
+                    continue
+                for item in body:
+                    sha = item.get("id")
+                    if not sha:
+                        continue
+                    results.append(
+                        {
+                            "repo": repo,
+                            "sha": sha,
+                            "author": item.get("author_name"),
+                            "message": item.get("message")
+                            or item.get("title", ""),
+                        }
+                    )
+        return results
+
     def validate_token(self) -> dict:
         user = self._get("/api/v4/user").json()
         username = user.get("username")

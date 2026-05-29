@@ -468,15 +468,60 @@ def _build_parser() -> argparse.ArgumentParser:
             ),
         )
         token.add_argument(
+            "--scan-commits",
+            action="store_true",
+            default=False,
+            dest="scan_commits",
+            help=(
+                "additionally scan the COMMIT-MESSAGE history of the repos this "
+                "token can reach for leaked credentials using necromancer-patterns "
+                "(requires the 'covenant[scan]' extra); adds a 'commit_findings' "
+                "array of {repo, sha, author, secret_findings} entries, one per "
+                "commit whose message matched. Commit messages are a notorious, "
+                "overlooked leak vector: a credential scrubbed from a tracked file "
+                "routinely survives verbatim in a 'git commit -m \"rotate to "
+                "AKIA...\"' subject or a revert/merge body. Where --scan-secrets "
+                "(recon-code) only sees CURRENT file content, this maps the leak "
+                "surface in HISTORY. Findings are share-safe REDACTED by default "
+                "(see --show-commit-secrets); the commit DIFF is never fetched and "
+                "no author email is surfaced. Read-only. Honors --pattern-set."
+            ),
+        )
+        token.add_argument(
+            "--show-commit-secrets",
+            action="store_true",
+            default=False,
+            dest="show_commit_secrets",
+            help=(
+                "emit the full raw secret value in --scan-commits findings instead "
+                "of the default share-safe redacted fingerprint (implies "
+                "--scan-commits). Use with care: output may land in logs, "
+                "scrollback, and shared artifacts."
+            ),
+        )
+        token.add_argument(
+            "--pattern-set",
+            default=None,
+            metavar="SET",
+            dest="pattern_set",
+            help=(
+                "secret-scan rule set to apply to --scan-commits (e.g. minimal, "
+                "aws, full); defaults to 'full'. Narrowing it (e.g. 'aws') drops "
+                "the generic high-entropy rule and its false positives. Only "
+                "meaningful with --scan-commits. Validated against the installed "
+                "necromancer-patterns sets."
+            ),
+        )
+        token.add_argument(
             "--max-pages",
             type=int,
             default=DEFAULT_MAX_PAGES,
             help=(
                 f"maximum org/group/workspace/key/gist/webhook/deploy-key/"
                 f"branch-protection/actions-secret/repo-visibility/member/"
-                f"collaborator pages to walk when an --enumerate-* or --audit-* "
-                f"flag is set (default: {DEFAULT_MAX_PAGES}, hard ceiling: "
-                f"{HARD_MAX_PAGES})."
+                f"collaborator/commit pages to walk when an --enumerate-*, "
+                f"--audit-*, or --scan-commits flag is set (default: "
+                f"{DEFAULT_MAX_PAGES}, hard ceiling: {HARD_MAX_PAGES})."
             ),
         )
 
@@ -744,6 +789,55 @@ def main(argv: list[str] | None = None) -> int:
                 payload["collaborators"] = client.enumerate_collaborators(
                     max_pages=max_pages
                 )
+            # Optional commit-message secret scanning. Read-only, additive: the
+            # v0.1 validate-token fields are untouched and the 'commit_findings'
+            # array only appears when --scan-commits is requested. Maps the
+            # leak surface in HISTORY (commit messages) that --scan-secrets,
+            # which only sees current file content, misses; reuses the same
+            # necromancer-patterns scan machinery. The commit diff is never
+            # fetched and only commits with a matched message are surfaced.
+            if getattr(args, "scan_commits", False) or getattr(
+                args, "show_commit_secrets", False
+            ):
+                reveal_commit = getattr(args, "show_commit_secrets", False)
+                scan_fragments, SecretScanUnavailable = _get_scan_fragments()
+                requested_set = getattr(args, "pattern_set", None)
+                try:
+                    from .secrets import (  # noqa: PLC0415
+                        DEFAULT_PATTERN_SET,
+                        available_pattern_sets,
+                    )
+
+                    valid_sets = available_pattern_sets()
+                except SecretScanUnavailable as exc:
+                    print(f"error: {exc}", file=sys.stderr)
+                    return EXIT_ERROR
+                pattern_set = requested_set or DEFAULT_PATTERN_SET
+                if pattern_set not in valid_sets:
+                    print(
+                        f"error: unknown --pattern-set {pattern_set!r}; "
+                        f"available sets: {', '.join(valid_sets)}",
+                        file=sys.stderr,
+                    )
+                    return EXIT_ERROR
+                commit_findings: list[dict] = []
+                for commit in client.scan_commits(max_pages=max_pages):
+                    findings = scan_fragments(
+                        [commit.get("message", "")],
+                        reveal=reveal_commit,
+                        pattern_set=pattern_set,
+                    )
+                    if not findings:
+                        continue
+                    commit_findings.append(
+                        {
+                            "repo": commit.get("repo"),
+                            "sha": commit.get("sha"),
+                            "author": commit.get("author"),
+                            "secret_findings": findings,
+                        }
+                    )
+                payload["commit_findings"] = commit_findings
             if (
                 getattr(args, "enumerate_orgs", False)
                 or getattr(args, "enumerate_keys", False)
@@ -756,6 +850,8 @@ def main(argv: list[str] | None = None) -> int:
                 or getattr(args, "audit_repo_visibility", False)
                 or getattr(args, "enumerate_members", False)
                 or getattr(args, "enumerate_collaborators", False)
+                or getattr(args, "scan_commits", False)
+                or getattr(args, "show_commit_secrets", False)
             ) and client.warnings:
                 payload["warnings"] = list(client.warnings)
         else:  # pragma: no cover - argparse guarantees a valid module

@@ -526,6 +526,47 @@ class _GitHubHandler(BaseHTTPRequestHandler):
                         {"login": "apprentice"},
                     ],
                 )
+        elif parsed.path.startswith("/repos/") and parsed.path.endswith(
+            "/commits"
+        ):
+            # Commit-history scanning (--scan-commits). The spellbook repo has a
+            # commit whose MESSAGE leaks a fake AWS key (the high-signal,
+            # message-leak case); grimoire's commit message is clean. Only the
+            # commit metadata + message are returned — the diff/patch is never
+            # fetched, and the author EMAIL is deliberately omitted.
+            repo = "/".join(parsed.path.split("/")[2:4])
+            leaky = repo.endswith("/spellbook")
+            if leaky:
+                self._json(
+                    200,
+                    [
+                        {
+                            "sha": "a1b2c3d",
+                            "author": {"login": "ex-contractor"},
+                            "commit": {
+                                "author": {"name": "Ex Contractor"},
+                                "message": (
+                                    "fix: rotate to "
+                                    "AKIAIOSFODNN7EXAMPLE temporarily"
+                                ),
+                            },
+                        },
+                    ],
+                )
+            else:
+                self._json(
+                    200,
+                    [
+                        {
+                            "sha": "deadbeef",
+                            "author": {"login": "spellcaster"},
+                            "commit": {
+                                "author": {"name": "Spell Caster"},
+                                "message": "docs: update the README",
+                            },
+                        },
+                    ],
+                )
         elif parsed.path == "/user/orgs":
             # Org/blast-radius enumeration (--enumerate-orgs). Supports the
             # MULTIPAGE_PREFIX is not relevant here (no query); serve a single
@@ -883,6 +924,33 @@ class _GitLabHandler(BaseHTTPRequestHandler):
                 [
                     {"username": "spellcaster", "access_level": 50},
                     {"username": "apprentice", "access_level": 30},
+                ],
+                headers={"X-Page": "1", "X-Next-Page": "", "X-Total-Pages": "1"},
+            )
+        elif parsed.path.startswith("/api/v4/projects/") and parsed.path.endswith(
+            "/repository/commits"
+        ):
+            # Commit-history scanning (--scan-commits). GitLab returns each
+            # commit's id (sha), author_name (identity) and message. One commit
+            # MESSAGE leaks a fake AWS key (the high-signal case). The author
+            # EMAIL is deliberately omitted; the diff is never fetched.
+            self._json(
+                200,
+                [
+                    {
+                        "id": "a1b2c3d",
+                        "author_name": "Ex Contractor",
+                        "title": "fix: rotate creds",
+                        "message": (
+                            "fix: rotate to AKIAIOSFODNN7EXAMPLE temporarily\n"
+                        ),
+                    },
+                    {
+                        "id": "deadbeef",
+                        "author_name": "Spell Caster",
+                        "title": "docs: update README",
+                        "message": "docs: update README\n",
+                    },
                 ],
                 headers={"X-Page": "1", "X-Next-Page": "", "X-Total-Pages": "1"},
             )
@@ -1280,6 +1348,40 @@ class _BitbucketHandler(BaseHTTPRequestHandler):
                         {
                             "user": {"nickname": "apprentice"},
                             "permission": "member",
+                        },
+                    ],
+                    "size": 2,
+                },
+            )
+        elif parsed.path.startswith("/2.0/repositories/") and parsed.path.endswith(
+            "/commits"
+        ):
+            # Commit-history scanning (--scan-commits). Bitbucket returns each
+            # commit's hash (sha), an author object, and message. One commit
+            # MESSAGE leaks a fake AWS key (the high-signal case). covenant
+            # surfaces only the author display nickname — never the `raw`
+            # "Name <email>" string — and never fetches the diff.
+            self._json(
+                200,
+                {
+                    "values": [
+                        {
+                            "hash": "a1b2c3d",
+                            "author": {
+                                "raw": "Ex Contractor <ex@evil.example>",
+                                "user": {"nickname": "ex-contractor"},
+                            },
+                            "message": (
+                                "fix: rotate to AKIAIOSFODNN7EXAMPLE temporarily"
+                            ),
+                        },
+                        {
+                            "hash": "deadbeef",
+                            "author": {
+                                "raw": "Spell Caster <sc@acme.example>",
+                                "user": {"nickname": "spellcaster"},
+                            },
+                            "message": "docs: update README",
                         },
                     ],
                     "size": 2,

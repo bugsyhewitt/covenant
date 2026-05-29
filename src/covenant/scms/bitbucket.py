@@ -757,6 +757,58 @@ class BitbucketClient(BaseSCMClient):
                     )
         return results
 
+    def scan_commits(self, max_pages: int = DEFAULT_MAX_PAGES) -> list[dict]:
+        """Collect commit metadata + messages from the repos this token reaches.
+
+        The Bitbucket Cloud analogue of GitHub commit-history scanning. Commit
+        *messages* are a notorious secret-leak vector: a credential scrubbed from
+        a tracked file routinely survives verbatim in the commit message, in a
+        revert/merge body quoting a diff, or in an automated bump commit. Where
+        ``--scan-secrets`` only sees the *current* file content the code-search
+        API returns, this maps the leak surface in *history*: it walks the recent
+        commits the token can read and surfaces each commit's message for the
+        caller to scan with the same :func:`covenant.secrets.scan_fragments`
+        machinery.
+
+        Walks the repositories the token is a member of
+        (``GET /2.0/repositories?role=member``) and, for each, lists
+        ``GET /2.0/repositories/{full_name}/commits`` (newest first), returning
+        one normalized ``{"repo", "sha", "author", "message"}`` record per commit.
+        ``author`` is the author's display name/nickname (identity only — the raw
+        ``raw`` author string carrying an email is deliberately parsed down to the
+        display name) and ``message`` is the raw commit message; the commit
+        *diff* is never fetched. Read-only.
+        """
+        results: list[dict] = []
+        for full_name in self._reachable_repos(max_pages=max_pages):
+            for resp in self._get_paginated(
+                f"/2.0/repositories/{full_name}/commits",
+                params={"pagelen": 100},
+                max_pages=max_pages,
+                next_request=_bitbucket_next,
+            ):
+                for item in resp.json().get("values", []):
+                    sha = item.get("hash")
+                    if not sha:
+                        continue
+                    author = item.get("author") or {}
+                    user = author.get("user") or {}
+                    # Surface only the display identity; never the `raw`
+                    # "Name <email>" string (which carries the author email).
+                    author_name = (
+                        user.get("nickname")
+                        or user.get("display_name")
+                    )
+                    results.append(
+                        {
+                            "repo": full_name,
+                            "sha": sha,
+                            "author": author_name,
+                            "message": item.get("message", ""),
+                        }
+                    )
+        return results
+
     def validate_token(self) -> dict:
         user = self._get("/2.0/user").json()
         username = user.get("username") or user.get("nickname")
