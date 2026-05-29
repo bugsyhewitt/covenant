@@ -451,6 +451,30 @@ def _build_parser() -> argparse.ArgumentParser:
             ),
         )
         token.add_argument(
+            "--audit-dependabot-alerts",
+            action="store_true",
+            default=False,
+            dest="audit_dependabot_alerts",
+            help=(
+                "additionally audit the OPEN dependency-vulnerability alerts on "
+                "the repos this token can reach (GitHub Dependabot alerts, GitLab "
+                "dependency-scanning vulnerabilities) via a read-only query; adds "
+                "a 'dependabot_alerts' array of {repo, package, ecosystem, "
+                "severity, state, identifier} entries. Where "
+                "--audit-branch-protection and --audit-codeowners report PROCESS "
+                "gaps, this reports a KNOWN-VULNERABILITY attack surface: each "
+                "alert is a documented CVE/GHSA in a dependency the repo actually "
+                "ships, named by package and advisory so it maps straight to an "
+                "exploit. Only OPEN alerts are requested; a repo with the feature "
+                "disabled or a token without the security-events scope is skipped "
+                "(403/404) rather than failing the whole audit. The advisory "
+                "IDENTIFIER is surfaced — never a credential. Bitbucket Cloud has "
+                "no first-party dependency-alert API, so the result is empty there "
+                "with an explanatory warning. Read-only; never dismisses, fixes, "
+                "or creates an alert."
+            ),
+        )
+        token.add_argument(
             "--enumerate-members",
             action="store_true",
             default=False,
@@ -544,7 +568,8 @@ def _build_parser() -> argparse.ArgumentParser:
             help=(
                 f"maximum org/group/workspace/key/gist/webhook/deploy-key/"
                 f"branch-protection/actions-secret/repo-visibility/codeowners/"
-                f"member/collaborator/commit pages to walk when an --enumerate-*, "
+                f"dependabot-alert/member/collaborator/commit pages to walk when "
+                f"an --enumerate-*, "
                 f"--audit-*, or --scan-commits flag is set (default: "
                 f"{DEFAULT_MAX_PAGES}, hard ceiling: {HARD_MAX_PAGES})."
             ),
@@ -803,6 +828,19 @@ def main(argv: list[str] | None = None) -> int:
                 payload["codeowners"] = client.audit_codeowners(
                     max_pages=max_pages
                 )
+            # Optional Dependabot / dependency-vulnerability audit. Read-only,
+            # additive: the v0.1 validate-token fields are untouched and the
+            # 'dependabot_alerts' array only appears when
+            # --audit-dependabot-alerts is requested. Reports the
+            # KNOWN-VULNERABILITY attack surface (open CVE/GHSA alerts in the
+            # dependencies reachable repos ship) — the offensive triage axis the
+            # PROCESS audits (branch protection, codeowners) do not cover. A repo
+            # with the feature disabled or out of the token's scope is skipped,
+            # never echoing a credential (only the advisory identifier).
+            if getattr(args, "audit_dependabot_alerts", False):
+                payload["dependabot_alerts"] = client.audit_dependabot_alerts(
+                    max_pages=max_pages
+                )
             # Optional org/group/workspace member enumeration. Read-only,
             # additive: the v0.1 validate-token fields are untouched and the
             # 'members' array only appears when --enumerate-members is
@@ -885,6 +923,7 @@ def main(argv: list[str] | None = None) -> int:
                 or getattr(args, "audit_actions_environments", False)
                 or getattr(args, "audit_repo_visibility", False)
                 or getattr(args, "audit_codeowners", False)
+                or getattr(args, "audit_dependabot_alerts", False)
                 or getattr(args, "enumerate_members", False)
                 or getattr(args, "enumerate_collaborators", False)
                 or getattr(args, "scan_commits", False)

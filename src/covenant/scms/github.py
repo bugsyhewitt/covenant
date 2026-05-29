@@ -812,6 +812,106 @@ class GitHubClient(BaseSCMClient):
                 return ""
         return ""
 
+    def audit_dependabot_alerts(
+        self, max_pages: int = DEFAULT_MAX_PAGES
+    ) -> list[dict]:
+        """Audit the OPEN Dependabot vulnerability alerts on reachable repos.
+
+        Where ``--audit-branch-protection`` / ``--audit-codeowners`` report
+        *process* gaps (would a bad push be stopped?), Dependabot alerts report a
+        *known-vulnerability* attack surface: every open alert is a
+        publicly-documented CVE/GHSA in a dependency the repo actually ships, with
+        a known severity and (often) a known exploit. For an authorized engagement
+        this is a high-signal triage axis — a reachable repo carrying open
+        ``critical`` alerts in an internet-facing ecosystem is where a real
+        intrusion is most likely to start, and the alert names the exact package
+        and advisory so the operator can map it to an exploit without further
+        probing.
+
+        Walks the repositories the token can reach (``GET /user/repos``) and, for
+        each, lists its OPEN Dependabot alerts
+        (``GET /repos/{owner}/{repo}/dependabot/alerts?state=open``), returning a
+        normalized list of
+        ``{"repo", "package", "ecosystem", "severity", "state", "identifier"}``
+        dicts. ``severity`` is the advisory's CVSS band
+        (``critical``/``high``/``medium``/``low``) and ``identifier`` is the
+        GHSA/CVE id (the advisory handle, NOT a credential). Only OPEN alerts are
+        requested — a dismissed/fixed alert is not live surface. A repo with
+        Dependabot disabled (or a token lacking the ``security_events`` scope)
+        returns HTTP 403/404 for that repo; covenant skips it rather than failing
+        the whole audit, so a partial-permission token still reports what it can
+        see. Read-only — it only GETs alert metadata and never dismisses, fixes,
+        or creates an alert.
+        """
+        results: list[dict] = []
+        for full_name in self._reachable_repos(max_pages=max_pages):
+            for record in self._dependabot_alerts_for_repo(
+                full_name, max_pages=max_pages
+            ):
+                results.append(record)
+        return results
+
+    def _dependabot_alerts_for_repo(
+        self, full_name: str, max_pages: int = DEFAULT_MAX_PAGES
+    ) -> list[dict]:
+        """List one repo's open Dependabot alerts, skipping repos we can't read.
+
+        Dependabot alerts are only readable when the feature is enabled on the
+        repo AND the token carries the ``security_events`` (or, for public repos,
+        ``public_repo``) scope; otherwise GitHub answers 403/404. We swallow those
+        two statuses for a single repo and return no alerts for it rather than
+        aborting the whole audit, so a token with mixed permissions still reports
+        every repo it CAN read.
+        """
+        records: list[dict] = []
+        url = f"{self.base_url}/repos/{full_name}/dependabot/alerts"
+        probe = self._request_with_retry(
+            url, {"state": "open", "per_page": 100}, self._headers()
+        )
+        # A repo with Dependabot disabled, or a token without the
+        # security_events scope, yields 403/404 — skip it, do not fail the run.
+        if probe.status_code in (403, 404):
+            return records
+        if probe.status_code == 401:
+            raise SCMError("authentication failed (401) — check the token")
+        if probe.status_code >= 400:
+            raise SCMError(
+                f"{self.base_url} returned HTTP {probe.status_code} "
+                f"for {full_name} dependabot alerts"
+            )
+        for resp in self._get_paginated(
+            f"/repos/{full_name}/dependabot/alerts",
+            params={"state": "open", "per_page": 100},
+            max_pages=max_pages,
+            next_request=_next_link,
+        ):
+            body = resp.json()
+            if not isinstance(body, list):
+                continue
+            for item in body:
+                advisory = item.get("security_advisory") or {}
+                vuln = item.get("security_vulnerability") or {}
+                pkg = vuln.get("package") or {}
+                # Prefer the GHSA id, falling back to the first CVE identifier.
+                identifier = advisory.get("ghsa_id")
+                if not identifier:
+                    for ref in advisory.get("identifiers", []):
+                        if ref.get("value"):
+                            identifier = ref.get("value")
+                            break
+                records.append(
+                    {
+                        "repo": full_name,
+                        "package": pkg.get("name"),
+                        "ecosystem": pkg.get("ecosystem"),
+                        "severity": vuln.get("severity")
+                        or advisory.get("severity"),
+                        "state": item.get("state", "open"),
+                        "identifier": identifier,
+                    }
+                )
+        return records
+
     def enumerate_members(self, max_pages: int = DEFAULT_MAX_PAGES) -> list[dict]:
         """List the other members of the orgs this token can reach (lateral moves).
 

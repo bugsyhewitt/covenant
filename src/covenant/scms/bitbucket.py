@@ -715,6 +715,31 @@ class BitbucketClient(BaseSCMClient):
             )
         return resp.text
 
+    def audit_dependabot_alerts(
+        self, max_pages: int = DEFAULT_MAX_PAGES
+    ) -> list[dict]:
+        """No-op on Bitbucket Cloud, which has no dependency-alert API.
+
+        GitHub's Dependabot alerts and GitLab's dependency-scanning
+        vulnerabilities both expose a known-vulnerability attack surface over a
+        read-only REST endpoint. Bitbucket Cloud has no equivalent surface: its
+        dependency security is delivered through third-party Pipelines
+        integrations (e.g. Snyk) rather than a first-party, token-readable
+        ``alerts`` endpoint, so there is nothing for covenant to enumerate here.
+
+        To keep the cross-provider audit uniform, the method exists and returns an
+        empty list (the same normalized shape as the other SCMs would yield, just
+        with no entries) and records a single non-fatal ``warnings`` note so the
+        operator understands the empty result reflects a platform limitation, not
+        a clean bill of health. Read-only — it makes no request at all.
+        """
+        self.warnings.append(
+            "dependabot-alerts audit is unsupported on Bitbucket Cloud "
+            "(no first-party dependency-alert API); result is empty by design, "
+            "not a clean bill of health"
+        )
+        return []
+
     def enumerate_members(self, max_pages: int = DEFAULT_MAX_PAGES) -> list[dict]:
         """List the other members of the workspaces this token can reach.
 
