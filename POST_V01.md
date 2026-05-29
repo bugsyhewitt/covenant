@@ -759,6 +759,49 @@ fuller blast-radius picture — rather than reopening closed items.
 > documentation. Full suite: 315 passing (301 baseline + 14 new), zero
 > regressions. README updated with a "Commit-history secret scanning" subsection.
 
+### CODEOWNERS-coverage audit in validate-token (`--audit-codeowners`) — ✅ IMPLEMENTED (Phase 2, Rotation 24)
+
+> **Status: shipped.** A read-only `--audit-codeowners` flag on `validate-token`
+> audits the CODEOWNERS coverage of the repos a captured token can reach.
+> CODEOWNERS is the control that routes MANDATORY review to a named owner per
+> path — GitHub's "Require review from Code Owners", GitLab's code-owner
+> approval, Bitbucket's "Code owners approval" merge check all read it — which
+> makes it the partner control to `--audit-branch-protection`: a protected
+> branch's require-code-owner-review gate only bites for paths a CODEOWNERS rule
+> matches, so auditing branch protection without CODEOWNERS leaves a blind spot.
+> The two high-signal findings the audit surfaces: a reachable repo with NO
+> CODEOWNERS file (`present=false`) cannot gate owner review at all, and a repo
+> whose CODEOWNERS has rules but no catch-all `*` (`has_global_owner=false`)
+> leaves every path matched by no rule — including a file an attacker newly adds
+> — with no required owner, the silent coverage gap a branch-protection audit
+> alone does not reveal. It walks the reachable repos and probes the standard
+> CODEOWNERS locations (provider dir, then root, then `docs/`) reporting the
+> first hit — GitHub `GET /repos/{owner}/{repo}/contents/{path}`, GitLab
+> `GET /api/v4/projects/{id}/repository/files/{path}?ref={branch}`, Bitbucket
+> `GET /2.0/repositories/{full_name}/src/HEAD/{path}` — normalizing each to
+> `{repo, present, path, rule_count, has_global_owner}` via a shared pure parser
+> (`covenant.scms.base.parse_codeowners`). **The decisive invariant**: only the
+> rule COUNT and the presence of a `*` catch-all are surfaced — the owner
+> account/team handles inside CODEOWNERS are NEVER echoed (they are not the
+> audit's signal) and no other repository content is read. **Why this over the
+> remaining OAuth-app / authorized-application candidate:** the Rotation 21 and
+> 22 notes both flagged OAuth-app enumeration as lacking three-SCM parity
+> (GitHub removed its authorized-OAuth-apps listing; GitLab/Bitbucket have no
+> clean token-reachable equivalent), which would force a lopsided, mostly-stubbed
+> feature. CODEOWNERS has a clean, documented, read-only file-fetch on all three
+> SCMs and a distinct defensive framing that complements the existing
+> `--audit-branch-protection` posture work. The walk reuses the shared scope
+> guardrail and rate-limit backoff, is bounded by `--max-pages`, and composes
+> with every other `--enumerate-*`/`--audit-*` flag. Purely additive: the v0.1
+> `scopes`/`user`/`admin` fields are untouched and the `codeowners` array appears
+> only when the flag is set. Tests: `tests/test_audit_codeowners.py` covers the
+> pure parser (rule counting, `*` detection, comment/blank skipping), each
+> client's normalized shape against the mock, present/absent derivation, the
+> no-owner-handle-leak invariant, e2e presence-only-when-requested, composition
+> with the other audits, the scope-guardrail gate (exit 2), and `--help`
+> documentation. Full suite: 330 passing (315 baseline + 15 new), zero
+> regressions. README updated with a "CODEOWNERS-coverage audit" subsection.
+
 **Remaining candidate directions (unimplemented, for future laps):** OAuth-app /
 authorized-application enumeration (note its weak three-SCM parity, above), and
 team/sub-group enumeration.

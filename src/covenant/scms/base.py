@@ -45,6 +45,62 @@ class SCMError(Exception):
     """Raised when an SCM API call fails or returns an unexpected shape."""
 
 
+#: Standard repository-root-relative locations a CODEOWNERS file may live at,
+#: in the precedence order the SCMs themselves honor (``.github/`` /
+#: ``.gitlab/`` first, then the root, then ``docs/``). All three SCMs support
+#: the same three locations, so covenant probes them in this order and reports
+#: the first one found. The provider-specific directory (``.github`` vs
+#: ``.gitlab``) is supplied by each client; the root and ``docs/`` fallbacks are
+#: universal.
+CODEOWNERS_FILENAME = "CODEOWNERS"
+
+
+def codeowners_candidate_paths(provider_dir: str) -> tuple[str, ...]:
+    """Return the CODEOWNERS lookup paths for a provider, in precedence order.
+
+    The SCMs resolve CODEOWNERS from, in order, their provider directory
+    (``.github`` on GitHub, ``.gitlab`` on GitLab, ``.bitbucket`` is not used —
+    Bitbucket keeps it at the root), then the repository root, then ``docs/``.
+    We probe in that same order and report the first hit so the audit mirrors
+    where the provider would actually read the file from.
+    """
+    paths: list[str] = []
+    if provider_dir:
+        paths.append(f"{provider_dir}/{CODEOWNERS_FILENAME}")
+    paths.append(CODEOWNERS_FILENAME)
+    paths.append(f"docs/{CODEOWNERS_FILENAME}")
+    return tuple(paths)
+
+
+def parse_codeowners(text: str) -> dict:
+    """Parse a CODEOWNERS file body into the normalized audit summary fields.
+
+    A CODEOWNERS file is a list of ``<path-pattern> <owner...>`` rules; lines
+    that are blank or begin with ``#`` are comments. covenant does NOT surface
+    the owners themselves (they are account/team handles, not credentials, but
+    they are also not the audit's signal) — it surfaces the *posture*: how many
+    ownership rules exist and whether a catch-all ``*`` rule routes review for
+    every otherwise-unmatched path. A file with rules but no ``*`` leaves paths
+    that match none of the patterns with NO required owner review even when a
+    branch-protection ``require_code_owner_reviews`` gate is on — the high-signal
+    gap this audit complements ``--audit-branch-protection`` to find.
+
+    Returns ``{"rule_count", "has_global_owner"}``. The function is pure (no
+    network, no SCM state) so it is unit-testable in isolation.
+    """
+    rule_count = 0
+    has_global_owner = False
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        rule_count += 1
+        pattern = line.split()[0]
+        if pattern == "*":
+            has_global_owner = True
+    return {"rule_count": rule_count, "has_global_owner": has_global_owner}
+
+
 def _parse_retry_after(resp: httpx.Response, attempt: int) -> float:
     """Return how many seconds to wait before retrying a rate-limited response.
 

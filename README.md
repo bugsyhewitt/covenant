@@ -860,6 +860,69 @@ Example `repo_visibility` array (a public repo flagged among private siblings):
 }
 ```
 
+### CODEOWNERS-coverage audit (`--audit-codeowners`)
+
+A **CODEOWNERS** file is the control that routes *mandatory* review to a named
+owner per path: GitHub's "Require review from Code Owners", GitLab's code-owner
+approval, and Bitbucket's "Code owners approval" merge check all read it. That
+makes it the **partner control to branch protection** — a protected branch's
+require-code-owner-review gate only bites for paths a CODEOWNERS rule matches, so
+auditing branch protection without auditing CODEOWNERS leaves a blind spot:
+
+- A reachable repo with **no CODEOWNERS file** (`present: false`) cannot gate
+  review by owner *at all*, however strict its branch protection looks.
+- A repo whose CODEOWNERS has rules but **no catch-all `*`**
+  (`has_global_owner: false`) leaves every path matched by no rule — including a
+  file an attacker newly adds in a PR — with no required owner. This is the
+  silent owner-coverage gap that `--audit-branch-protection` alone does not
+  reveal.
+
+Pass `--audit-codeowners` to `validate-token` and covenant walks the repos the
+token can reach, probing the standard CODEOWNERS locations (in precedence order:
+the provider directory, then the repo root, then `docs/`) with a **read-only**
+file fetch and reporting the first one found:
+
+| SCM       | Endpoint                                                        | Locations probed                                      |
+|-----------|----------------------------------------------------------------|-------------------------------------------------------|
+| GitHub    | `GET /repos/{owner}/{repo}/contents/{path}`                    | `.github/CODEOWNERS`, `CODEOWNERS`, `docs/CODEOWNERS` |
+| GitLab    | `GET /api/v4/projects/{id}/repository/files/{path}?ref={branch}` | `.gitlab/CODEOWNERS`, `CODEOWNERS`, `docs/CODEOWNERS` |
+| Bitbucket | `GET /2.0/repositories/{full_name}/src/HEAD/{path}`            | `CODEOWNERS`, `docs/CODEOWNERS`                        |
+
+Each entry is normalized to
+`{"repo", "present", "path", "rule_count", "has_global_owner"}`.
+
+> **Only the posture is surfaced — never the owners.** The owner account/team
+> handles inside CODEOWNERS are *not* echoed (they are not the audit's signal),
+> and no other repository content is read. covenant reports only how many
+> ownership rules exist and whether a catch-all `*` rule covers otherwise-
+> unmatched paths.
+
+The walk is bounded by the same `--max-pages` flag and honors the scope guardrail
+and automatic rate-limit retry/backoff. Like the other `--enumerate-*`/`--audit-*`
+flags the feature is purely additive (all may be combined): without the flag the
+output is unchanged, and with it the v0.1 `scopes`/`user`/`admin` fields are
+untouched — only the `codeowners` array is added. It is **read-only** and never
+edits CODEOWNERS or any review setting.
+
+```bash
+covenant github validate-token \
+  --scope-file scope.txt \
+  --audit-codeowners \
+  --token-env COVENANT_TOKEN
+```
+
+Example `codeowners` array (a partial-coverage repo flagged alongside a covered
+one):
+
+```json
+{
+  "codeowners": [
+    { "repo": "acme-corp/spellbook", "present": true, "path": ".github/CODEOWNERS", "rule_count": 2, "has_global_owner": false },
+    { "repo": "acme-corp/grimoire",  "present": true, "path": "CODEOWNERS",         "rule_count": 2, "has_global_owner": true  }
+  ]
+}
+```
+
 ### Deployment-environment audit (`--audit-actions-environments`)
 
 A deployment **environment** (GitHub Actions "Environments", GitLab project

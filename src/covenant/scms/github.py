@@ -4,8 +4,16 @@ from __future__ import annotations
 
 import httpx
 
+import base64
+
 from ..tokens import classify_token
-from .base import DEFAULT_MAX_PAGES, BaseSCMClient, SCMError
+from .base import (
+    DEFAULT_MAX_PAGES,
+    BaseSCMClient,
+    SCMError,
+    codeowners_candidate_paths,
+    parse_codeowners,
+)
 
 # GitHub's text-match Accept header requests snippet fragments alongside code
 # search results so we can scan them for secrets without a separate fetch.
@@ -717,6 +725,92 @@ class GitHubClient(BaseSCMClient):
                     }
                 )
         return results
+
+    def audit_codeowners(self, max_pages: int = DEFAULT_MAX_PAGES) -> list[dict]:
+        """Audit the CODEOWNERS coverage of the repos this token can reach.
+
+        CODEOWNERS is the file that routes mandatory review to a named owner per
+        path. It is the partner control to branch protection: a protected branch
+        with ``require_code_owner_reviews`` enforces that the right owner signs
+        off — but ONLY for paths a CODEOWNERS rule matches. A repo with NO
+        CODEOWNERS file (``present=false``) cannot gate review by owner at all,
+        and a repo whose CODEOWNERS has rules but no catch-all ``*`` leaves every
+        unmatched path — including a newly added file an attacker introduces —
+        with no required owner, a silent gap that ``--audit-branch-protection``
+        alone does not reveal. This audit surfaces that posture so an operator can
+        triage which reachable repos lack an owner-review safety net.
+
+        Walks the repositories the token can reach (``GET /user/repos``) and, for
+        each, probes the standard CODEOWNERS locations
+        (``.github/CODEOWNERS``, ``CODEOWNERS``, ``docs/CODEOWNERS``) via
+        ``GET /repos/{owner}/{repo}/contents/{path}`` (which defaults to the
+        repo's default branch), reporting the first one found. Returns a
+        normalized list of
+        ``{"repo", "present", "path", "rule_count", "has_global_owner"}`` dicts.
+        Only the rule COUNT and the presence of a ``*`` catch-all are surfaced —
+        the owner handles themselves are not echoed, and no other repository
+        content is read. Read-only.
+        """
+        results: list[dict] = []
+        for full_name in self._reachable_repos(max_pages=max_pages):
+            results.append(self._codeowners_for_repo(full_name))
+        return results
+
+    def _codeowners_for_repo(self, full_name: str) -> dict:
+        """Probe one repo's CODEOWNERS locations and normalize the result."""
+        record = {
+            "repo": full_name,
+            "present": False,
+            "path": None,
+            "rule_count": 0,
+            "has_global_owner": False,
+        }
+        for path in codeowners_candidate_paths(".github"):
+            text = self._fetch_file_content(f"/repos/{full_name}/contents/{path}")
+            if text is None:
+                continue
+            summary = parse_codeowners(text)
+            record.update(
+                {
+                    "present": True,
+                    "path": path,
+                    "rule_count": summary["rule_count"],
+                    "has_global_owner": summary["has_global_owner"],
+                }
+            )
+            break
+        return record
+
+    def _fetch_file_content(self, path: str) -> str | None:
+        """GET a repo file's decoded text, or ``None`` if it does not exist.
+
+        Uses ``GET /repos/{owner}/{repo}/contents/{path}`` which returns a JSON
+        object carrying base64-encoded ``content``. A 404 (file absent) returns
+        ``None`` rather than raising so the caller can probe several candidate
+        paths cheaply. Only the requested file is read.
+        """
+        url = f"{self.base_url}{path}"
+        resp = self._request_with_retry(url, None, self._headers())
+        if resp.status_code == 404:
+            return None
+        if resp.status_code == 401:
+            raise SCMError("authentication failed (401) — check the token")
+        if resp.status_code >= 400:
+            raise SCMError(
+                f"{self.base_url} returned HTTP {resp.status_code} for {path}"
+            )
+        body = resp.json()
+        if not isinstance(body, dict):
+            return None
+        encoded = body.get("content")
+        if not isinstance(encoded, str):
+            return ""
+        if body.get("encoding") == "base64" or "\n" in encoded or encoded.strip():
+            try:
+                return base64.b64decode(encoded).decode("utf-8", errors="replace")
+            except (ValueError, TypeError):
+                return ""
+        return ""
 
     def enumerate_members(self, max_pages: int = DEFAULT_MAX_PAGES) -> list[dict]:
         """List the other members of the orgs this token can reach (lateral moves).
