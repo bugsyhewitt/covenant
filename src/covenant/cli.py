@@ -362,14 +362,35 @@ def _build_parser() -> argparse.ArgumentParser:
             ),
         )
         token.add_argument(
+            "--enumerate-actions-secrets",
+            action="store_true",
+            default=False,
+            dest="enumerate_actions_secrets",
+            help=(
+                "additionally list the CI/CD secret NAMES this token can reach "
+                "(GitHub Actions org/repo secrets, GitLab group/project CI/CD "
+                "variables, Bitbucket workspace/repo Pipelines variables) via a "
+                "read-only query; adds an 'actions_secrets' array of "
+                "{scope, owner, name, protected} entries. CI/CD secrets are the "
+                "credential surface that powers the build pipeline (cloud keys, "
+                "registry passwords, signing/deploy tokens), so a long list is a "
+                "high-blast-radius lateral-movement and supply-chain target. "
+                "Only the secret NAME and metadata are surfaced — the secret "
+                "VALUE is never read or echoed (the APIs do not return secured "
+                "values, and covenant emits names only). 'protected' flags an "
+                "org secret restricted to selected repos (GitHub) or a "
+                "protected/secured variable (GitLab/Bitbucket). Read-only."
+            ),
+        )
+        token.add_argument(
             "--max-pages",
             type=int,
             default=DEFAULT_MAX_PAGES,
             help=(
                 f"maximum org/group/workspace/key/gist/webhook/deploy-key/"
-                f"branch-protection pages to walk when an --enumerate-* or "
-                f"--audit-* flag is set (default: {DEFAULT_MAX_PAGES}, hard "
-                f"ceiling: {HARD_MAX_PAGES})."
+                f"branch-protection/actions-secret pages to walk when an "
+                f"--enumerate-* or --audit-* flag is set (default: "
+                f"{DEFAULT_MAX_PAGES}, hard ceiling: {HARD_MAX_PAGES})."
             ),
         )
 
@@ -584,6 +605,16 @@ def main(argv: list[str] | None = None) -> int:
                 payload["branch_protection"] = client.audit_branch_protection(
                     max_pages=max_pages
                 )
+            # Optional CI/CD secret-name enumeration. Read-only, additive: the
+            # v0.1 validate-token fields are untouched and the 'actions_secrets'
+            # array only appears when --enumerate-actions-secrets is requested.
+            # Maps the build-pipeline credential surface (org/repo Actions
+            # secrets, group/project CI/CD variables, workspace/repo Pipelines
+            # variables); only secret NAMES are surfaced, never the VALUES.
+            if getattr(args, "enumerate_actions_secrets", False):
+                payload["actions_secrets"] = client.enumerate_actions_secrets(
+                    max_pages=max_pages
+                )
             if (
                 getattr(args, "enumerate_orgs", False)
                 or getattr(args, "enumerate_keys", False)
@@ -591,6 +622,7 @@ def main(argv: list[str] | None = None) -> int:
                 or getattr(args, "enumerate_webhooks", False)
                 or getattr(args, "enumerate_deploy_keys", False)
                 or getattr(args, "audit_branch_protection", False)
+                or getattr(args, "enumerate_actions_secrets", False)
             ) and client.warnings:
                 payload["warnings"] = list(client.warnings)
         else:  # pragma: no cover - argparse guarantees a valid module
