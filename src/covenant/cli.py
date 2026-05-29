@@ -324,12 +324,30 @@ def _build_parser() -> argparse.ArgumentParser:
             ),
         )
         token.add_argument(
+            "--enumerate-deploy-keys",
+            action="store_true",
+            default=False,
+            dest="enumerate_deploy_keys",
+            help=(
+                "additionally list the deploy keys on the repos this token can "
+                "reach (GitHub/GitLab/Bitbucket per-repo SSH keys) via a "
+                "read-only query; adds a 'deploy_keys' array of "
+                "{repo, id, title, read_only, fingerprint} entries. A deploy "
+                "key grants Git access to a SINGLE repo independent of any "
+                "human credential, so a writable one (read_only=false) is a "
+                "persistence and supply-chain foothold. Only PUBLIC key "
+                "metadata is shown; private keys are never read. (Bitbucket "
+                "access keys are read-only by design, so read_only is always "
+                "true there.)"
+            ),
+        )
+        token.add_argument(
             "--max-pages",
             type=int,
             default=DEFAULT_MAX_PAGES,
             help=(
-                f"maximum org/group/workspace/key/gist/webhook pages to walk "
-                f"when an --enumerate-* flag is set (default: "
+                f"maximum org/group/workspace/key/gist/webhook/deploy-key pages "
+                f"to walk when an --enumerate-* flag is set (default: "
                 f"{DEFAULT_MAX_PAGES}, hard ceiling: {HARD_MAX_PAGES})."
             ),
         )
@@ -526,11 +544,21 @@ def main(argv: list[str] | None = None) -> int:
                 payload["webhooks"] = client.enumerate_webhooks(
                     max_pages=max_pages
                 )
+            # Optional deploy-key enumeration. Read-only, additive: the v0.1
+            # validate-token fields are untouched and the 'deploy_keys' array
+            # only appears when --enumerate-deploy-keys is requested. Maps the
+            # repo-scoped persistence/supply-chain surface (per-repo SSH keys);
+            # private key material is never read.
+            if getattr(args, "enumerate_deploy_keys", False):
+                payload["deploy_keys"] = client.enumerate_deploy_keys(
+                    max_pages=max_pages
+                )
             if (
                 getattr(args, "enumerate_orgs", False)
                 or getattr(args, "enumerate_keys", False)
                 or getattr(args, "enumerate_gists", False)
                 or getattr(args, "enumerate_webhooks", False)
+                or getattr(args, "enumerate_deploy_keys", False)
             ) and client.warnings:
                 payload["warnings"] = list(client.warnings)
         else:  # pragma: no cover - argparse guarantees a valid module

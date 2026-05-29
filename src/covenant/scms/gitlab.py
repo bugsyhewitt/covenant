@@ -348,6 +348,90 @@ class GitLabClient(BaseSCMClient):
                 )
         return results
 
+    def enumerate_deploy_keys(
+        self, max_pages: int = DEFAULT_MAX_PAGES
+    ) -> list[dict]:
+        """List the deploy keys on the projects this token can reach (persistence).
+
+        GitLab's deploy key is a project-scoped SSH key (optionally with
+        push/write access via ``can_push``) — the repo-scoped complement to the
+        account keys surfaced by :meth:`enumerate_keys`. A writable deploy key is
+        a persistence and supply-chain foothold: it grants Git access to one
+        project independent of any human credential. We walk the projects the
+        token is a member of (``GET /api/v4/projects?membership=true``) and, for
+        each, list ``GET /api/v4/projects/{id}/deploy_keys``, returning the same
+        normalized ``{"repo", "id", "title", "read_only", "fingerprint"}`` shape
+        as the other SCMs. ``read_only`` is the inverse of GitLab's ``can_push``
+        (``read_only == not can_push``) — ``False`` means the key can push. Only
+        PUBLIC key metadata is returned; private key material is never read.
+        """
+        results: list[dict] = []
+        for project in self._reachable_projects(max_pages=max_pages):
+            project_id = project["id"]
+            repo = project["repo"]
+            keys_path = f"/api/v4/projects/{project_id}/deploy_keys"
+            keys_params = {"per_page": _PER_PAGE, "page": 1}
+            for resp in self._get_paginated(
+                keys_path,
+                params=keys_params,
+                max_pages=max_pages,
+                next_request=_gitlab_next(keys_path, keys_params),
+            ):
+                body = resp.json()
+                if not isinstance(body, list):
+                    continue
+                for item in body:
+                    key_id = item.get("id")
+                    if key_id is None:
+                        continue
+                    results.append(
+                        {
+                            "repo": repo,
+                            "id": key_id,
+                            "title": item.get("title"),
+                            "read_only": not bool(item.get("can_push", False)),
+                            "fingerprint": item.get("fingerprint")
+                            or item.get("key"),
+                        }
+                    )
+        return results
+
+    def _reachable_projects(
+        self, max_pages: int = DEFAULT_MAX_PAGES
+    ) -> list[dict]:
+        """Return ``{"id", "repo"}`` for projects this token is a member of.
+
+        Walks ``GET /api/v4/projects?membership=true`` with the shared offset
+        paginator. Used by :meth:`enumerate_deploy_keys` to know which projects'
+        deploy keys to inspect (the numeric id feeds the per-project endpoint and
+        the path-with-namespace is the human-readable ``repo`` label).
+        """
+        path = "/api/v4/projects"
+        params = {"membership": "true", "per_page": _PER_PAGE, "page": 1}
+        out: list[dict] = []
+        for resp in self._get_paginated(
+            path,
+            params=params,
+            max_pages=max_pages,
+            next_request=_gitlab_next(path, params),
+        ):
+            body = resp.json()
+            if not isinstance(body, list):
+                continue
+            for item in body:
+                project_id = item.get("id")
+                if project_id is None:
+                    continue
+                out.append(
+                    {
+                        "id": project_id,
+                        "repo": item.get("path_with_namespace")
+                        or item.get("name")
+                        or str(project_id),
+                    }
+                )
+        return out
+
     def enumerate_webhooks(self, max_pages: int = DEFAULT_MAX_PAGES) -> list[dict]:
         """List the group-level webhooks this token can reach (exfil/SSRF surface).
 

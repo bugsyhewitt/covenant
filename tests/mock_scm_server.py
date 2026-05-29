@@ -297,6 +297,34 @@ class _GitHubHandler(BaseHTTPRequestHandler):
                     },
                 ],
             )
+        elif parsed.path == "/user/repos":
+            # Repo listing used by deploy-key enumeration
+            # (--enumerate-deploy-keys). Two reachable repos.
+            self._json(
+                200,
+                [
+                    {"full_name": "acme-corp/spellbook", "private": True},
+                    {"full_name": "acme-corp/grimoire", "private": False},
+                ],
+            )
+        elif parsed.path.startswith("/repos/") and parsed.path.endswith("/keys"):
+            # Per-repo deploy-key enumeration (--enumerate-deploy-keys). The
+            # `key` is the PUBLIC SSH key; no private material is ever returned.
+            # spellbook has a WRITABLE deploy key (read_only false — the
+            # high-signal case); grimoire has a read-only one.
+            repo = "/".join(parsed.path.split("/")[2:4])
+            writable = repo.endswith("/spellbook")
+            self._json(
+                200,
+                [
+                    {
+                        "id": 300,
+                        "title": "ci-deploy" if writable else "readonly-deploy",
+                        "key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA deploy",
+                        "read_only": not writable,
+                    },
+                ],
+            )
         elif parsed.path == "/user/orgs":
             # Org/blast-radius enumeration (--enumerate-orgs). Supports the
             # MULTIPAGE_PREFIX is not relevant here (no query); serve a single
@@ -500,6 +528,26 @@ class _GitLabHandler(BaseHTTPRequestHandler):
                         "push_events": True,
                         "merge_requests_events": True,
                         "issues_events": False,
+                    },
+                ],
+                headers={"X-Page": "1", "X-Next-Page": "", "X-Total-Pages": "1"},
+            )
+        elif parsed.path.startswith("/api/v4/projects/") and parsed.path.endswith(
+            "/deploy_keys"
+        ):
+            # Per-project deploy-key enumeration (--enumerate-deploy-keys).
+            # GitLab encodes write access as `can_push`; covenant inverts it to
+            # `read_only`. This key is WRITABLE (can_push true) — the high-signal
+            # case. The `key` is the PUBLIC SSH key; no private material.
+            self._json(
+                200,
+                [
+                    {
+                        "id": 301,
+                        "title": "ci-deploy",
+                        "key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA deploy",
+                        "fingerprint": "SHA256:deploykey301",
+                        "can_push": True,
                     },
                 ],
                 headers={"X-Page": "1", "X-Next-Page": "", "X-Total-Pages": "1"},
@@ -727,6 +775,28 @@ class _BitbucketHandler(BaseHTTPRequestHandler):
                             "url": f"https://hooks.example.com/{owner}",
                             "active": True,
                             "events": ["repo:push", "pullrequest:created"],
+                        },
+                    ],
+                    "size": 1,
+                },
+            )
+        elif parsed.path.startswith("/2.0/repositories/") and parsed.path.endswith(
+            "/deploy-keys"
+        ):
+            # Per-repo deploy-key (access-key) enumeration
+            # (--enumerate-deploy-keys). Bitbucket Cloud access keys are
+            # read-only by design (no per-key push toggle). The `key` is the
+            # PUBLIC SSH key; no private material is returned.
+            repo = "/".join(parsed.path.split("/")[3:5])
+            self._json(
+                200,
+                {
+                    "values": [
+                        {
+                            "id": 401,
+                            "label": "ci-deploy",
+                            "key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA deploy",
+                            "comment": repo,
                         },
                     ],
                     "size": 1,

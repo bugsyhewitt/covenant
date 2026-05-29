@@ -459,10 +459,39 @@ fuller blast-radius picture — rather than reopening closed items.
 > passing (211 baseline + 11 new), zero regressions. README updated with a
 > "Webhook enumeration" subsection.
 
+### Deploy-key enumeration in validate-token (`--enumerate-deploy-keys`) — ✅ IMPLEMENTED (Phase 2, Rotation 16)
+
+> **Status: shipped.** A read-only `--enumerate-deploy-keys` flag on
+> `validate-token` walks the repositories a captured token can reach and, for
+> each, lists its deploy keys, adding a normalized `deploy_keys` array of
+> `{repo, id, title, read_only, fingerprint}` entries. Where `--enumerate-keys`
+> covers the *account's* SSH/GPG keys, this covers the *repo-scoped* keys: a
+> deploy key grants Git access to a single repo independent of any human
+> credential and often carries write access, so a writable one
+> (`read_only=false`) is a persistence and supply-chain foothold (push to the
+> repo *as the repo*). GitHub walks `GET /user/repos` → `GET
+> /repos/{owner}/{repo}/keys` (returns `read_only` directly); GitLab walks `GET
+> /api/v4/projects?membership=true` → `GET /api/v4/projects/{id}/deploy_keys`
+> (inverts `can_push` into `read_only`); Bitbucket walks `GET
+> /2.0/repositories?role=member` → `GET
+> /2.0/repositories/{full_name}/deploy-keys` (Cloud access keys are read-only by
+> design, so `read_only` is always `true` there). Only PUBLIC key metadata is
+> emitted — private key material is never read. The walk reuses the shared
+> paginator, scope guardrail and rate-limit backoff, is bounded by
+> `--max-pages`, and composes with the other `--enumerate-*` flags. Purely
+> additive: the v0.1 `scopes`/`user`/`admin` fields are untouched and the
+> `deploy_keys` array appears only when the flag is set. Tests:
+> `tests/test_enumerate_deploy_keys.py` covers each client's normalized shape,
+> the `read_only`/`can_push` write-semantics mapping across all three SCMs, the
+> no-private-material invariant, e2e presence-only-when-requested, composition
+> with the other enumerations, the scope-guardrail gate (exit 2), and `--help`
+> documentation. Full suite: 233 passing (222 baseline + 11 new), zero
+> regressions. README updated with a "Deploy-key enumeration" subsection.
+
 **Remaining candidate directions (unimplemented, for future laps):** branch
-protection / ruleset policy audit, deploy-key enumeration per repo, and
-commit-history secret scanning (`git log` blob walking beyond code-search
-fragments).
+protection / ruleset policy audit, OAuth-app / authorized-application
+enumeration, and commit-history secret scanning (`git log` blob walking beyond
+code-search fragments).
 
 ## Follow-on fixes
 
