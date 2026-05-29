@@ -696,6 +696,60 @@ class GitHubClient(BaseSCMClient):
                 )
         return results
 
+    def enumerate_members(self, max_pages: int = DEFAULT_MAX_PAGES) -> list[dict]:
+        """List the other members of the orgs this token can reach (lateral moves).
+
+        Where the rest of the ``--enumerate-*`` family maps what *this* token
+        reaches (its keys, its repos, the secrets it can read), member
+        enumeration maps the *people* who share that reach: the other accounts
+        with access to each org the token belongs to. That is the
+        lateral-movement surface — the set of additional identities an operator
+        could target to widen a foothold (phishing, credential reuse, a weaker
+        teammate token) — and, for the org owners specifically, the set of
+        accounts whose compromise grants administrative control of the whole org.
+
+        Walks the organizations the token belongs to (via :meth:`enumerate_orgs`)
+        and, for each, lists its members with their organization role:
+        ``GET /orgs/{org}/members?role=admin`` returns the owners and
+        ``GET /orgs/{org}/members?role=member`` returns the rest, so the
+        normalized ``role`` is ``"admin"`` (org owner) or ``"member"``. Returns a
+        list of ``{"scope", "owner", "username", "role"}`` dicts (``scope`` is
+        always ``"org"`` here). Only public membership identity is surfaced — no
+        email, no keys, no secrets — and the API never exposes a credential, so
+        this is a read-only directory query, not a data dump.
+        """
+        results: list[dict] = []
+        for org in self.enumerate_orgs(max_pages=max_pages):
+            owner = org.get("name")
+            if not owner:
+                continue
+            # The members endpoint does not return per-user role, so we query
+            # the two role-filtered views and tag each accordingly. admins
+            # (org owners) are the highest-value lateral target.
+            for role in ("admin", "member"):
+                for resp in self._get_paginated(
+                    f"/orgs/{owner}/members",
+                    params={"role": role, "per_page": 100},
+                    max_pages=max_pages,
+                    next_request=_next_link,
+                ):
+                    body = resp.json()
+                    if not isinstance(body, list):
+                        continue
+                    for item in body:
+                        username = item.get("login")
+                        if not username:
+                            continue
+                        results.append(
+                            {
+                                "scope": "org",
+                                "owner": owner,
+                                "username": username,
+                                "role": role,
+                            }
+                        )
+        return results
+
     def validate_token(self) -> dict:
         resp = self._get("/user")
         user = resp.json()

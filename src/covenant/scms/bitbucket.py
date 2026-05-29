@@ -635,6 +635,61 @@ class BitbucketClient(BaseSCMClient):
                 )
         return results
 
+    def enumerate_members(self, max_pages: int = DEFAULT_MAX_PAGES) -> list[dict]:
+        """List the other members of the workspaces this token can reach.
+
+        Bitbucket Cloud's analogue of GitHub org-member enumeration. Where the
+        rest of the ``--enumerate-*`` family maps what *this* token reaches,
+        member enumeration maps the *people* who share that reach: the accounts
+        with membership in each workspace the token can access, and at what
+        permission level. That is the lateral-movement surface (other identities
+        an operator could target to widen a foothold) and, for the workspace
+        owners specifically, the accounts whose compromise grants administrative
+        control of the workspace.
+
+        Walks the workspaces the token can reach (via :meth:`enumerate_orgs`)
+        and, for each, lists ``GET /2.0/workspaces/{slug}/members`` with the
+        shared ``next``-envelope paginator. Each membership carries a
+        ``user`` object (we surface its ``nickname``/``display_name`` as the
+        ``username``) and a ``permission`` level; we normalize ``owner`` to
+        ``role="admin"`` and everything else to ``role="member"`` so the shape
+        matches the other SCMs. Returns ``{"scope", "owner", "username", "role"}``
+        dicts (``scope`` is ``"workspace"``). Only membership identity is
+        surfaced — no token, no key, no email — a read-only directory query.
+        """
+        results: list[dict] = []
+        for workspace in self.enumerate_orgs(max_pages=max_pages):
+            owner = workspace.get("name")
+            if not owner:
+                continue
+            for resp in self._get_paginated(
+                f"/2.0/workspaces/{owner}/members",
+                params={"pagelen": 100},
+                max_pages=max_pages,
+                next_request=_bitbucket_next,
+            ):
+                for item in resp.json().get("values", []):
+                    user = item.get("user") or {}
+                    username = (
+                        user.get("nickname")
+                        or user.get("display_name")
+                        or user.get("username")
+                    )
+                    if not username:
+                        continue
+                    permission = item.get("permission")
+                    results.append(
+                        {
+                            "scope": "workspace",
+                            "owner": owner,
+                            "username": username,
+                            "role": "admin"
+                            if permission == "owner"
+                            else "member",
+                        }
+                    )
+        return results
+
     def validate_token(self) -> dict:
         user = self._get("/2.0/user").json()
         username = user.get("username") or user.get("nickname")

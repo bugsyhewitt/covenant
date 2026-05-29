@@ -426,14 +426,33 @@ def _build_parser() -> argparse.ArgumentParser:
             ),
         )
         token.add_argument(
+            "--enumerate-members",
+            action="store_true",
+            default=False,
+            dest="enumerate_members",
+            help=(
+                "additionally list the OTHER members of the org/group/workspace "
+                "this token can reach (GitHub org members, GitLab group members, "
+                "Bitbucket workspace members) via a read-only directory query; "
+                "adds a 'members' array of {scope, owner, username, role} "
+                "entries. Where the other --enumerate-* flags map what THIS "
+                "token reaches, this maps the PEOPLE who share that reach — the "
+                "lateral-movement surface (other identities to target to widen a "
+                "foothold) and, for role=admin (org owners), the accounts whose "
+                "compromise grants administrative control of the org. Only "
+                "membership identity + role is surfaced — never an email, key, "
+                "or credential."
+            ),
+        )
+        token.add_argument(
             "--max-pages",
             type=int,
             default=DEFAULT_MAX_PAGES,
             help=(
                 f"maximum org/group/workspace/key/gist/webhook/deploy-key/"
-                f"branch-protection/actions-secret/repo-visibility pages to "
-                f"walk when an --enumerate-* or --audit-* flag is set (default: "
-                f"{DEFAULT_MAX_PAGES}, hard ceiling: {HARD_MAX_PAGES})."
+                f"branch-protection/actions-secret/repo-visibility/member pages "
+                f"to walk when an --enumerate-* or --audit-* flag is set "
+                f"(default: {DEFAULT_MAX_PAGES}, hard ceiling: {HARD_MAX_PAGES})."
             ),
         )
 
@@ -679,6 +698,16 @@ def main(argv: list[str] | None = None) -> int:
                 payload["repo_visibility"] = client.audit_repo_visibility(
                     max_pages=max_pages
                 )
+            # Optional org/group/workspace member enumeration. Read-only,
+            # additive: the v0.1 validate-token fields are untouched and the
+            # 'members' array only appears when --enumerate-members is
+            # requested. Maps the lateral-movement surface (the OTHER identities
+            # sharing the token's reach); only membership identity + role is
+            # surfaced, never an email, key, or credential.
+            if getattr(args, "enumerate_members", False):
+                payload["members"] = client.enumerate_members(
+                    max_pages=max_pages
+                )
             if (
                 getattr(args, "enumerate_orgs", False)
                 or getattr(args, "enumerate_keys", False)
@@ -689,6 +718,7 @@ def main(argv: list[str] | None = None) -> int:
                 or getattr(args, "enumerate_actions_secrets", False)
                 or getattr(args, "audit_actions_environments", False)
                 or getattr(args, "audit_repo_visibility", False)
+                or getattr(args, "enumerate_members", False)
             ) and client.warnings:
                 payload["warnings"] = list(client.warnings)
         else:  # pragma: no cover - argparse guarantees a valid module

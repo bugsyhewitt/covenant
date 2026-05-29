@@ -850,6 +850,62 @@ class GitLabClient(BaseSCMClient):
                 )
         return results
 
+    def enumerate_members(self, max_pages: int = DEFAULT_MAX_PAGES) -> list[dict]:
+        """List the other members of the groups this token can reach (lateral moves).
+
+        The GitLab analogue of GitHub org-member enumeration. Where the rest of
+        the ``--enumerate-*`` family maps what *this* token reaches, member
+        enumeration maps the *people* who share that reach: the accounts with
+        access to each group the token belongs to, and at what access level. That
+        is the lateral-movement surface (other identities an operator could
+        target to widen a foothold) and, for the Owners specifically, the set of
+        accounts whose compromise grants administrative control of the group.
+
+        Walks the groups the token belongs to (via :meth:`enumerate_orgs`) and,
+        for each, lists ``GET /api/v4/groups/{id}/members/all`` (effective
+        membership, including members inherited from ancestor groups) with the
+        shared offset paginator. GitLab reports each member's numeric
+        ``access_level`` (50 = Owner, 40 = Maintainer, 30 = Developer, ...); we
+        normalize the Owner level (>= 50) to ``role="admin"`` and everything else
+        to ``role="member"`` so the shape matches the other SCMs. Returns
+        ``{"scope", "owner", "username", "role"}`` dicts (``scope`` is
+        ``"group"``). Only membership identity is surfaced — no token, no key, no
+        email — a read-only directory query.
+        """
+        results: list[dict] = []
+        for group in self.enumerate_orgs(max_pages=max_pages):
+            owner = group.get("name")
+            if not owner:
+                continue
+            path = f"/api/v4/groups/{_group_id(owner)}/members/all"
+            params = {"per_page": _PER_PAGE, "page": 1}
+            for resp in self._get_paginated(
+                path,
+                params=params,
+                max_pages=max_pages,
+                next_request=_gitlab_next(path, params),
+            ):
+                body = resp.json()
+                if not isinstance(body, list):
+                    continue
+                for item in body:
+                    username = item.get("username")
+                    if not username:
+                        continue
+                    try:
+                        access_level = int(item.get("access_level", 0) or 0)
+                    except (TypeError, ValueError):
+                        access_level = 0
+                    results.append(
+                        {
+                            "scope": "group",
+                            "owner": owner,
+                            "username": username,
+                            "role": "admin" if access_level >= 50 else "member",
+                        }
+                    )
+        return results
+
     def validate_token(self) -> dict:
         user = self._get("/api/v4/user").json()
         username = user.get("username")

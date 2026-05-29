@@ -462,6 +462,25 @@ class _GitHubHandler(BaseHTTPRequestHandler):
                         ],
                     },
                 )
+        elif parsed.path.startswith("/orgs/") and parsed.path.endswith(
+            "/members"
+        ):
+            # Org-member enumeration (--enumerate-members). The endpoint is
+            # role-filtered (?role=admin|member); covenant queries both and tags
+            # each. Admins are the org owners (the high-value lateral target).
+            # Only public membership identity is returned — no email or keys.
+            owner = parsed.path.split("/")[2]
+            role = params.get("role", ["all"])[0]
+            if role == "admin":
+                self._json(200, [{"login": f"{owner}-owner"}])
+            else:
+                self._json(
+                    200,
+                    [
+                        {"login": "spellcaster"},
+                        {"login": "apprentice"},
+                    ],
+                )
         elif parsed.path == "/user/orgs":
             # Org/blast-radius enumeration (--enumerate-orgs). Supports the
             # MULTIPAGE_PREFIX is not relevant here (no query); serve a single
@@ -788,6 +807,21 @@ class _GitLabHandler(BaseHTTPRequestHandler):
                 [
                     {"id": 1, "name": "production"},
                     {"id": 2, "name": "staging"},
+                ],
+                headers={"X-Page": "1", "X-Next-Page": "", "X-Total-Pages": "1"},
+            )
+        elif parsed.path.startswith("/api/v4/groups/") and parsed.path.endswith(
+            "/members/all"
+        ):
+            # Group-member enumeration (--enumerate-members). GitLab returns the
+            # effective membership with a numeric access_level (50 = Owner);
+            # covenant maps >=50 to role=admin, else member. Only membership
+            # identity is returned — no token, key, or email.
+            self._json(
+                200,
+                [
+                    {"username": "spellcaster", "access_level": 50},
+                    {"username": "apprentice", "access_level": 30},
                 ],
                 headers={"X-Page": "1", "X-Next-Page": "", "X-Total-Pages": "1"},
             )
@@ -1141,6 +1175,29 @@ class _BitbucketHandler(BaseHTTPRequestHandler):
                             "uuid": "{env-stage}",
                             "name": "staging",
                             "restrictions": {"admin_only": False},
+                        },
+                    ],
+                    "size": 2,
+                },
+            )
+        elif parsed.path.startswith("/2.0/workspaces/") and parsed.path.endswith(
+            "/members"
+        ):
+            # Workspace-member enumeration (--enumerate-members). Each membership
+            # carries a `user` object and a `permission` level; covenant maps
+            # 'owner' to role=admin, else member. Only membership identity is
+            # returned — no token, key, or email.
+            self._json(
+                200,
+                {
+                    "values": [
+                        {
+                            "user": {"nickname": "spellcaster"},
+                            "permission": "owner",
+                        },
+                        {
+                            "user": {"nickname": "apprentice"},
+                            "permission": "member",
                         },
                     ],
                     "size": 2,
