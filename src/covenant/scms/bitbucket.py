@@ -538,6 +538,46 @@ class BitbucketClient(BaseSCMClient):
                     )
         return results
 
+    def audit_repo_visibility(
+        self, max_pages: int = DEFAULT_MAX_PAGES
+    ) -> list[dict]:
+        """Audit the visibility posture of the repos this token can reach.
+
+        Bitbucket Cloud's analogue of GitHub's repo-visibility audit. Where the
+        ``--enumerate-*`` flags map a token's offensive reach, this reports the
+        *exposure* posture: which reachable repos are PUBLIC. A public Bitbucket
+        repo is world-readable source/history/issues — the external attack
+        surface a private repo is not — and is where covenant's own secret
+        scanning has the most to find.
+
+        Walks ``GET /2.0/repositories?role=member`` with the shared
+        ``next``-envelope paginator and returns
+        ``{"repo", "visibility", "public"}`` dicts. Bitbucket reports a boolean
+        ``is_private``; covenant derives ``public`` from it and surfaces a
+        human-readable ``visibility`` label (``private``/``public``). Only repo
+        metadata is read.
+        """
+        results: list[dict] = []
+        for resp in self._get_paginated(
+            "/2.0/repositories",
+            params={"role": "member", "pagelen": 100},
+            max_pages=max_pages,
+            next_request=_bitbucket_next,
+        ):
+            for item in resp.json().get("values", []):
+                full_name = item.get("full_name")
+                if not full_name:
+                    continue
+                is_private = bool(item.get("is_private", True))
+                results.append(
+                    {
+                        "repo": full_name,
+                        "visibility": "private" if is_private else "public",
+                        "public": not is_private,
+                    }
+                )
+        return results
+
     def validate_token(self) -> dict:
         user = self._get("/2.0/user").json()
         username = user.get("username") or user.get("nickname")

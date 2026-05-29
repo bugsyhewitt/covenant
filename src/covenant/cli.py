@@ -383,13 +383,32 @@ def _build_parser() -> argparse.ArgumentParser:
             ),
         )
         token.add_argument(
+            "--audit-repo-visibility",
+            action="store_true",
+            default=False,
+            dest="audit_repo_visibility",
+            help=(
+                "additionally audit the visibility posture of the repos this "
+                "token can reach (GitHub/Bitbucket private flag, GitLab "
+                "visibility string) via a read-only query; adds a "
+                "'repo_visibility' array of {repo, visibility, public} entries. "
+                "A PUBLIC repo is the org's external attack surface — its "
+                "source, history and any leaked secrets are world-readable — so "
+                "an unexpectedly public repo is a direct leak/supply-chain risk "
+                "and the place covenant's recon-code scanning finds the most. "
+                "GitLab 'internal' projects (readable by any authenticated user "
+                "of the instance) are flagged as public=true exposure. Only "
+                "repo metadata is read; no code or secrets are fetched."
+            ),
+        )
+        token.add_argument(
             "--max-pages",
             type=int,
             default=DEFAULT_MAX_PAGES,
             help=(
                 f"maximum org/group/workspace/key/gist/webhook/deploy-key/"
-                f"branch-protection/actions-secret pages to walk when an "
-                f"--enumerate-* or --audit-* flag is set (default: "
+                f"branch-protection/actions-secret/repo-visibility pages to "
+                f"walk when an --enumerate-* or --audit-* flag is set (default: "
                 f"{DEFAULT_MAX_PAGES}, hard ceiling: {HARD_MAX_PAGES})."
             ),
         )
@@ -615,6 +634,16 @@ def main(argv: list[str] | None = None) -> int:
                 payload["actions_secrets"] = client.enumerate_actions_secrets(
                     max_pages=max_pages
                 )
+            # Optional repo-visibility audit. Read-only, additive: the v0.1
+            # validate-token fields are untouched and the 'repo_visibility'
+            # array only appears when --audit-repo-visibility is requested.
+            # Reports the EXPOSURE posture (which reachable repos are public),
+            # the complement to the offensive --enumerate-* family; only repo
+            # metadata is read, never code or secrets.
+            if getattr(args, "audit_repo_visibility", False):
+                payload["repo_visibility"] = client.audit_repo_visibility(
+                    max_pages=max_pages
+                )
             if (
                 getattr(args, "enumerate_orgs", False)
                 or getattr(args, "enumerate_keys", False)
@@ -623,6 +652,7 @@ def main(argv: list[str] | None = None) -> int:
                 or getattr(args, "enumerate_deploy_keys", False)
                 or getattr(args, "audit_branch_protection", False)
                 or getattr(args, "enumerate_actions_secrets", False)
+                or getattr(args, "audit_repo_visibility", False)
             ) and client.warnings:
                 payload["warnings"] = list(client.warnings)
         else:  # pragma: no cover - argparse guarantees a valid module
