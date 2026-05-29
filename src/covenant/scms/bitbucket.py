@@ -273,6 +273,48 @@ class BitbucketClient(BaseSCMClient):
                 )
         return results
 
+    def enumerate_webhooks(self, max_pages: int = DEFAULT_MAX_PAGES) -> list[dict]:
+        """List the workspace-level webhooks this token can reach (exfil/SSRF).
+
+        Bitbucket's analogue of a GitHub org webhook is the *workspace hook*;
+        ``GET /2.0/workspaces/{slug}/hooks`` lists the webhooks configured on a
+        workspace. We discover the workspaces the token can reach (via
+        :meth:`enumerate_orgs`) and walk each one's hooks with the shared
+        ``next``-envelope paginator, returning the same normalized
+        ``{"scope", "owner", "id", "url", "events", "active"}`` shape as the
+        other SCMs' :meth:`enumerate_webhooks`. ``scope`` is ``"workspace"`` and
+        ``owner`` is the workspace slug. Bitbucket returns the subscribed event
+        keys as an ``events`` array directly. The destination ``url`` is the
+        recon signal and is surfaced verbatim; the hook *secret* is never
+        requested or echoed.
+        """
+        results: list[dict] = []
+        for workspace in self.enumerate_orgs(max_pages=max_pages):
+            owner = workspace.get("name")
+            if not owner:
+                continue
+            for resp in self._get_paginated(
+                f"/2.0/workspaces/{owner}/hooks",
+                params={"pagelen": 100},
+                max_pages=max_pages,
+                next_request=_bitbucket_next,
+            ):
+                for item in resp.json().get("values", []):
+                    hook_uuid = item.get("uuid")
+                    if not hook_uuid:
+                        continue
+                    results.append(
+                        {
+                            "scope": "workspace",
+                            "owner": owner,
+                            "id": hook_uuid,
+                            "url": item.get("url"),
+                            "events": item.get("events") or [],
+                            "active": bool(item.get("active", False)),
+                        }
+                    )
+        return results
+
     def validate_token(self) -> dict:
         user = self._get("/2.0/user").json()
         username = user.get("username") or user.get("nickname")

@@ -432,10 +432,37 @@ fuller blast-radius picture — rather than reopening closed items.
 > `--help` documentation. Full suite: 179 passing (167 baseline + 12 new), zero
 > regressions. README updated with an "SSH/GPG key enumeration" subsection.
 
+### Webhook enumeration in validate-token (`--enumerate-webhooks`) — ✅ IMPLEMENTED (Phase 2, Rotation 15)
+
+> **Status: shipped.** A read-only `--enumerate-webhooks` flag on
+> `validate-token` walks the org/group/workspace webhooks a captured token can
+> reach and adds a normalized `webhooks` array of
+> `{scope, owner, id, url, events, active}` entries. It reuses
+> `enumerate_orgs` to discover the reachable orgs (GitHub `GET /user/orgs`),
+> groups (GitLab `GET /api/v4/groups`) and workspaces (Bitbucket
+> `GET /2.0/workspaces`), then for each lists its hooks: GitHub
+> `GET /orgs/{org}/hooks`, GitLab `GET /api/v4/groups/{id}/hooks` (per-event
+> boolean flags normalized into the `events` list), Bitbucket
+> `GET /2.0/workspaces/{slug}/hooks`. The signal: a webhook's destination URL
+> is where event payloads (repo content/metadata) are POSTed — a data-exfil
+> channel and, against internal infra, an SSRF target. The destination `url`
+> is surfaced verbatim (the recon point); the hook **secret** is never
+> requested or echoed. The walk reuses the shared paginator, scope guardrail
+> and rate-limit backoff, is bounded by `--max-pages`, and composes with the
+> other `--enumerate-*` flags. Purely additive: the v0.1
+> `scopes`/`user`/`admin` fields are untouched and the `webhooks` array appears
+> only when the flag is set. Tests: `tests/test_enumerate_webhooks.py` covers
+> each client's normalized shape, the GitLab per-event-flag → `events`-list
+> reduction, the no-hook-secret-leak invariant across all three SCMs, e2e
+> presence-only-when-requested, composition with the other enumerations, the
+> scope-guardrail gate (exit 2), and `--help` documentation. Full suite: 222
+> passing (211 baseline + 11 new), zero regressions. README updated with a
+> "Webhook enumeration" subsection.
+
 **Remaining candidate directions (unimplemented, for future laps):** branch
-protection / ruleset policy audit, webhook enumeration (exfil/SSRF surface),
-deploy-key enumeration per repo, gist/snippet enumeration, and commit-history
-secret scanning (`git log` blob walking beyond code-search fragments).
+protection / ruleset policy audit, deploy-key enumeration per repo, and
+commit-history secret scanning (`git log` blob walking beyond code-search
+fragments).
 
 ## Follow-on fixes
 

@@ -348,6 +348,61 @@ class GitLabClient(BaseSCMClient):
                 )
         return results
 
+    def enumerate_webhooks(self, max_pages: int = DEFAULT_MAX_PAGES) -> list[dict]:
+        """List the group-level webhooks this token can reach (exfil/SSRF surface).
+
+        GitLab's analogue of a GitHub org webhook is the *group hook*; ``GET
+        /api/v4/groups/{id}/hooks`` lists the webhooks configured on a group. We
+        discover the groups the token belongs to (via :meth:`enumerate_orgs`)
+        and walk each group's hooks with the shared offset paginator, returning
+        the same normalized ``{"scope", "owner", "id", "url", "events",
+        "active"}`` shape as the other SCMs' :meth:`enumerate_webhooks`.
+        ``scope`` is ``"group"`` and ``owner`` is the group full path.
+
+        GitLab encodes each subscribed event as a separate boolean flag
+        (``push_events``, ``merge_requests_events``, ...) rather than an event
+        array; we normalize the *enabled* flags into an ``events`` list (the
+        flag names with the ``_events`` suffix stripped) so the output matches
+        the other providers. The destination ``url`` is surfaced verbatim (it is
+        the recon signal); the hook *token* is never requested or echoed.
+        """
+        results: list[dict] = []
+        for group in self.enumerate_orgs(max_pages=max_pages):
+            owner = group.get("name")
+            if not owner:
+                continue
+            path = f"/api/v4/groups/{_group_id(owner)}/hooks"
+            params = {"per_page": _PER_PAGE, "page": 1}
+            for resp in self._get_paginated(
+                path,
+                params=params,
+                max_pages=max_pages,
+                next_request=_gitlab_next(path, params),
+            ):
+                body = resp.json()
+                if not isinstance(body, list):
+                    continue
+                for item in body:
+                    hook_id = item.get("id")
+                    if hook_id is None:
+                        continue
+                    events = [
+                        key[: -len("_events")]
+                        for key, value in item.items()
+                        if key.endswith("_events") and value is True
+                    ]
+                    results.append(
+                        {
+                            "scope": "group",
+                            "owner": owner,
+                            "id": hook_id,
+                            "url": item.get("url"),
+                            "events": sorted(events),
+                            "active": True,
+                        }
+                    )
+        return results
+
     def validate_token(self) -> dict:
         user = self._get("/api/v4/user").json()
         username = user.get("username")

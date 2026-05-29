@@ -269,6 +269,60 @@ class GitHubClient(BaseSCMClient):
                 )
         return results
 
+    def enumerate_webhooks(self, max_pages: int = DEFAULT_MAX_PAGES) -> list[dict]:
+        """List the org-level webhooks this token can reach (exfil/SSRF surface).
+
+        Webhooks are the next blast-radius axis after SSH/GPG keys and gists:
+        an org webhook POSTs every matching event (pushes, PRs, member changes)
+        to an attacker-influenceable URL, which is both a *data-exfiltration*
+        channel (the payloads carry repo content and metadata) and an *SSRF*
+        primitive (an in-scope org webhook can be pointed at internal infra). A
+        captured token that can read or, worse, edit org webhooks can quietly
+        redirect or clone the event stream.
+
+        This walks the organizations the token belongs to (via
+        :meth:`enumerate_orgs`) and, for each, lists ``GET /orgs/{org}/hooks``
+        with the shared paginator, returning a normalized list of
+        ``{"scope", "owner", "id", "url", "events", "active"}`` dicts. ``scope``
+        is always ``"org"`` for GitHub here (org-level hooks are the
+        account-reachable surface; per-repo hooks require naming a repo and are
+        out of this flag's scope). The destination ``url`` (the ``config.url``)
+        is the actionable signal — it is the place events are sent — and is
+        surfaced verbatim because it is the whole point of the recon; the hook
+        *secret* (``config.secret``) is never returned by the API and covenant
+        never requests or echoes it.
+        """
+        results: list[dict] = []
+        for org in self.enumerate_orgs(max_pages=max_pages):
+            owner = org.get("name")
+            if not owner:
+                continue
+            for resp in self._get_paginated(
+                f"/orgs/{owner}/hooks",
+                params={"per_page": 100},
+                max_pages=max_pages,
+                next_request=_next_link,
+            ):
+                body = resp.json()
+                if not isinstance(body, list):
+                    continue
+                for item in body:
+                    hook_id = item.get("id")
+                    if hook_id is None:
+                        continue
+                    config = item.get("config") or {}
+                    results.append(
+                        {
+                            "scope": "org",
+                            "owner": owner,
+                            "id": hook_id,
+                            "url": config.get("url"),
+                            "events": item.get("events") or [],
+                            "active": bool(item.get("active", False)),
+                        }
+                    )
+        return results
+
     def validate_token(self) -> dict:
         resp = self._get("/user")
         user = resp.json()
