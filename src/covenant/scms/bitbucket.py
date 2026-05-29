@@ -812,6 +812,32 @@ class BitbucketClient(BaseSCMClient):
         )
         return []
 
+    def audit_code_scanning_alerts(
+        self, max_pages: int = DEFAULT_MAX_PAGES
+    ) -> list[dict]:
+        """No-op on Bitbucket Cloud, which has no code-scanning-alert API.
+
+        GitHub's code-scanning alerts and GitLab's SAST findings both expose, over
+        a read-only REST endpoint, the vulnerabilities the platform's own static
+        analyzer found in a repo's first-party source. Bitbucket Cloud has no
+        equivalent first-party surface: static analysis on Bitbucket is delivered
+        through third-party Pipelines integrations (e.g. SonarQube, Snyk Code)
+        rather than a token-readable ``alerts`` endpoint, so there is nothing for
+        covenant to enumerate here.
+
+        To keep the cross-provider audit uniform, the method exists and returns an
+        empty list (the same normalized shape as the other SCMs would yield, just
+        with no entries) and records a single non-fatal ``warnings`` note so the
+        operator understands the empty result reflects a platform limitation, not
+        a clean bill of health. Read-only — it makes no request at all.
+        """
+        self.warnings.append(
+            "code-scanning-alerts audit is unsupported on Bitbucket Cloud "
+            "(no first-party static-analysis-alert API); result is empty by "
+            "design, not a clean bill of health"
+        )
+        return []
+
     def enumerate_members(self, max_pages: int = DEFAULT_MAX_PAGES) -> list[dict]:
         """List the other members of the workspaces this token can reach.
 

@@ -530,6 +530,32 @@ def _build_parser() -> argparse.ArgumentParser:
             ),
         )
         token.add_argument(
+            "--audit-code-scanning-alerts",
+            action="store_true",
+            default=False,
+            dest="audit_code_scanning_alerts",
+            help=(
+                "additionally audit the OPEN code-scanning alerts on the repos "
+                "this token can reach (GitHub code-scanning/CodeQL alerts, GitLab "
+                "SAST findings) via a read-only query; adds a "
+                "'code_scanning_alerts' array of {repo, rule_id, rule_name, "
+                "severity, state, html_url} entries. Where "
+                "--audit-dependabot-alerts reports a KNOWN-VULNERABILITY surface "
+                "in a repo's third-party DEPENDENCIES, this reports the static-"
+                "analyzer findings in the repo's OWN first-party source (injection "
+                "sinks, crypto misuse, path-traversal) — a bug in code the org "
+                "itself controls, named by rule and source location so it maps "
+                "straight to an exploit. 'severity' prefers the security-severity "
+                "band (critical/high/medium/low). Only OPEN alerts are requested; "
+                "a repo with the feature disabled, never analyzed, or out of the "
+                "token's scope is skipped (403/404) rather than failing the whole "
+                "audit. The html_url points at the finding, never a credential. "
+                "Bitbucket Cloud has no first-party static-analysis-alert API, so "
+                "the result is empty there with an explanatory warning. Read-only; "
+                "never dismisses, fixes, or creates an alert."
+            ),
+        )
+        token.add_argument(
             "--enumerate-members",
             action="store_true",
             default=False,
@@ -922,6 +948,19 @@ def main(argv: list[str] | None = None) -> int:
                 payload["secret_scanning"] = client.audit_secret_scanning(
                     max_pages=max_pages
                 )
+            # Optional code-scanning-alert audit. Read-only, additive: the v0.1
+            # validate-token fields are untouched and the 'code_scanning_alerts'
+            # array only appears when --audit-code-scanning-alerts is requested.
+            # Reports the static-analyzer findings in the repo's OWN first-party
+            # source (GitHub code-scanning/CodeQL alerts, GitLab SAST findings) —
+            # the code-flaw triage axis the dependency and credential audits do
+            # not cover. A repo with the feature disabled, never analyzed, or out
+            # of the token's scope is skipped; only rule metadata + the alert URL
+            # are surfaced, never a credential.
+            if getattr(args, "audit_code_scanning_alerts", False):
+                payload["code_scanning_alerts"] = (
+                    client.audit_code_scanning_alerts(max_pages=max_pages)
+                )
             # Optional org/group/workspace member enumeration. Read-only,
             # additive: the v0.1 validate-token fields are untouched and the
             # 'members' array only appears when --enumerate-members is
@@ -1007,6 +1046,7 @@ def main(argv: list[str] | None = None) -> int:
                 or getattr(args, "audit_dependabot_alerts", False)
                 or getattr(args, "audit_packages", False)
                 or getattr(args, "audit_secret_scanning", False)
+                or getattr(args, "audit_code_scanning_alerts", False)
                 or getattr(args, "enumerate_members", False)
                 or getattr(args, "enumerate_collaborators", False)
                 or getattr(args, "scan_commits", False)

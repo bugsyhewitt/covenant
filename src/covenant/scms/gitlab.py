@@ -1173,6 +1173,87 @@ class GitLabClient(BaseSCMClient):
                     )
         return results
 
+    def audit_code_scanning_alerts(
+        self, max_pages: int = DEFAULT_MAX_PAGES
+    ) -> list[dict]:
+        """Audit the OPEN static-analysis (SAST) findings on reachable projects.
+
+        GitLab has no "code-scanning alerts" endpoint of its own; its analogue is
+        the Vulnerability Report fed by *SAST* — the same report that
+        ``--audit-dependabot-alerts`` reads for dependency findings, here filtered
+        to ``report_type=sast``. Each such finding is a vulnerability GitLab's
+        static analyzer detected in the project's OWN first-party source (an
+        injection sink, a crypto misuse, a path-traversal), the same code-flaw
+        signal as GitHub's code-scanning alerts, so covenant surfaces it under the
+        identical flag and normalized shape for a uniform cross-provider audit.
+
+        Walks the projects the token is a member of
+        (``GET /api/v4/projects?membership=true``) and, for each, lists its
+        DETECTED SAST vulnerabilities
+        (``GET /api/v4/projects/{id}/vulnerabilities?report_type=sast&state=detected``),
+        returning a normalized list of
+        ``{"repo", "rule_id", "rule_name", "severity", "state", "html_url"}``
+        dicts. ``rule_id`` is the finding's analyzer identifier (its
+        ``finding.identifier`` where present, else the title), ``rule_name`` its
+        human title, and ``severity`` is lower-cased to match the other SCMs
+        (``critical``/``high``/...). ``html_url`` is the finding's web link, not a
+        credential. Only OPEN (``detected``) findings are requested. A project
+        without the security feature (or a token lacking access) answers 403/404
+        for that project; covenant skips it rather than failing the whole audit.
+        Read-only — it only GETs finding metadata and never confirms, dismisses,
+        or resolves a vulnerability.
+        """
+        results: list[dict] = []
+        for project in self._reachable_projects(max_pages=max_pages):
+            project_id = project["id"]
+            repo = project["repo"]
+            path = f"/api/v4/projects/{project_id}/vulnerabilities"
+            params = {
+                "report_type": "sast",
+                "state": "detected",
+                "per_page": _PER_PAGE,
+                "page": 1,
+            }
+            url = f"{self.base_url}{path}"
+            probe = self._request_with_retry(url, params, self._headers())
+            # No security feature / no access for this project — skip it, do not
+            # abort the whole audit.
+            if probe.status_code in (403, 404):
+                continue
+            if probe.status_code == 401:
+                raise SCMError("authentication failed (401) — check the token")
+            if probe.status_code >= 400:
+                raise SCMError(
+                    f"{self.base_url} returned HTTP {probe.status_code} "
+                    f"for {repo} SAST findings"
+                )
+            for resp in self._get_paginated(
+                path,
+                params=params,
+                max_pages=max_pages,
+                next_request=_gitlab_next(path, params),
+            ):
+                body = resp.json()
+                if not isinstance(body, list):
+                    continue
+                for item in body:
+                    finding = item.get("finding") or {}
+                    severity = (item.get("severity") or "").lower() or None
+                    results.append(
+                        {
+                            "repo": repo,
+                            "rule_id": finding.get("identifier")
+                            or item.get("title"),
+                            "rule_name": item.get("title")
+                            or finding.get("name"),
+                            "severity": severity,
+                            "state": item.get("state", "detected"),
+                            "html_url": item.get("web_url")
+                            or finding.get("web_url"),
+                        }
+                    )
+        return results
+
     def enumerate_members(self, max_pages: int = DEFAULT_MAX_PAGES) -> list[dict]:
         """List the other members of the groups this token can reach (lateral moves).
 
