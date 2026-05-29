@@ -567,6 +567,45 @@ class _GitHubHandler(BaseHTTPRequestHandler):
                         },
                     ],
                 )
+        elif parsed.path.startswith("/repos/") and parsed.path.endswith(
+            "/dependabot/alerts"
+        ):
+            # Dependabot-alert audit (--audit-dependabot-alerts). The spellbook
+            # repo has an OPEN CRITICAL alert (the high-signal known-vulnerability
+            # case); the grimoire repo has Dependabot DISABLED, which GitHub
+            # answers with 403/404 — covenant must SKIP that repo, not fail the
+            # whole audit. The API returns the security_advisory / vulnerability /
+            # package metadata; only the advisory IDENTIFIER (GHSA/CVE) is a
+            # handle, never a credential.
+            repo = "/".join(parsed.path.split("/")[2:4])
+            if repo.endswith("/spellbook"):
+                self._json(
+                    200,
+                    [
+                        {
+                            "number": 1,
+                            "state": "open",
+                            "security_advisory": {
+                                "ghsa_id": "GHSA-xxxx-yyyy-zzzz",
+                                "severity": "critical",
+                                "identifiers": [
+                                    {"type": "GHSA", "value": "GHSA-xxxx-yyyy-zzzz"},
+                                    {"type": "CVE", "value": "CVE-2025-0001"},
+                                ],
+                            },
+                            "security_vulnerability": {
+                                "severity": "critical",
+                                "package": {
+                                    "ecosystem": "pip",
+                                    "name": "requests",
+                                },
+                            },
+                        },
+                    ],
+                )
+            else:
+                # grimoire: Dependabot disabled / token lacks security_events.
+                self._json(403, {"message": "Dependabot alerts are disabled"})
         elif parsed.path.startswith("/repos/") and "/contents/" in parsed.path:
             # CODEOWNERS-coverage audit (--audit-codeowners). GitHub serves file
             # content as a JSON object with base64-encoded `content`. covenant
@@ -992,6 +1031,33 @@ class _GitLabHandler(BaseHTTPRequestHandler):
                         "author_name": "Spell Caster",
                         "title": "docs: update README",
                         "message": "docs: update README\n",
+                    },
+                ],
+                headers={"X-Page": "1", "X-Next-Page": "", "X-Total-Pages": "1"},
+            )
+        elif parsed.path.startswith("/api/v4/projects/") and parsed.path.endswith(
+            "/vulnerabilities"
+        ):
+            # Dependency-vulnerability audit (--audit-dependabot-alerts).
+            # GitLab's analogue of a Dependabot alert is a detected
+            # vulnerability from dependency scanning. The mock project has one
+            # OPEN (detected) CRITICAL finding. covenant lower-cases severity to
+            # match the cross-provider shape and surfaces only the advisory
+            # identifier (CVE), never a credential.
+            self._json(
+                200,
+                [
+                    {
+                        "id": 9001,
+                        "title": "lodash",
+                        "severity": "Critical",
+                        "state": "detected",
+                        "report_type": "dependency_scanning",
+                        "cve": "CVE-2025-0002",
+                        "finding": {
+                            "name": "lodash",
+                            "identifier": "CVE-2025-0002",
+                        },
                     },
                 ],
                 headers={"X-Page": "1", "X-Next-Page": "", "X-Total-Pages": "1"},

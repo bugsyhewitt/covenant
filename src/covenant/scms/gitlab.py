@@ -963,6 +963,78 @@ class GitLabClient(BaseSCMClient):
         except (ValueError, TypeError):
             return ""
 
+    def audit_dependabot_alerts(
+        self, max_pages: int = DEFAULT_MAX_PAGES
+    ) -> list[dict]:
+        """Audit the OPEN dependency-scanning vulnerabilities on reachable projects.
+
+        GitLab has no "Dependabot" — its analogue is the Vulnerability Report fed
+        by *dependency scanning*: each finding is a known CVE in a dependency the
+        project ships, with a severity and an external identifier. This is the
+        same known-vulnerability attack-surface signal as GitHub's Dependabot
+        alerts, so covenant surfaces it under the identical flag and normalized
+        shape for a uniform cross-provider audit.
+
+        Walks the projects the token is a member of
+        (``GET /api/v4/projects?membership=true``) and, for each, lists its
+        DETECTED vulnerabilities
+        (``GET /api/v4/projects/{id}/vulnerabilities?state=detected``), returning
+        a normalized list of
+        ``{"repo", "package", "ecosystem", "severity", "state", "identifier"}``
+        dicts. ``severity`` is lower-cased to match the other SCMs
+        (``critical``/``high``/...), ``package`` is the affected dependency name
+        and ``ecosystem`` its scanner/report type, and ``identifier`` is the
+        advisory handle (CVE/GHSA), never a credential. Only OPEN (``detected``)
+        findings are requested. A project without the security feature (or a token
+        lacking access) answers 403/404 for that project; covenant skips it rather
+        than failing the whole audit. Read-only — it only GETs finding metadata
+        and never confirms, dismisses, or resolves a vulnerability.
+        """
+        results: list[dict] = []
+        for project in self._reachable_projects(max_pages=max_pages):
+            project_id = project["id"]
+            repo = project["repo"]
+            path = f"/api/v4/projects/{project_id}/vulnerabilities"
+            params = {"state": "detected", "per_page": _PER_PAGE, "page": 1}
+            url = f"{self.base_url}{path}"
+            probe = self._request_with_retry(url, params, self._headers())
+            # No security feature / no access for this project — skip it, do not
+            # abort the whole audit.
+            if probe.status_code in (403, 404):
+                continue
+            if probe.status_code == 401:
+                raise SCMError("authentication failed (401) — check the token")
+            if probe.status_code >= 400:
+                raise SCMError(
+                    f"{self.base_url} returned HTTP {probe.status_code} "
+                    f"for {repo} vulnerabilities"
+                )
+            for resp in self._get_paginated(
+                path,
+                params=params,
+                max_pages=max_pages,
+                next_request=_gitlab_next(path, params),
+            ):
+                body = resp.json()
+                if not isinstance(body, list):
+                    continue
+                for item in body:
+                    severity = (item.get("severity") or "").lower() or None
+                    finding = item.get("finding") or {}
+                    identifier = item.get("cve") or finding.get("identifier")
+                    results.append(
+                        {
+                            "repo": repo,
+                            "package": item.get("title")
+                            or finding.get("name"),
+                            "ecosystem": item.get("report_type"),
+                            "severity": severity,
+                            "state": item.get("state", "detected"),
+                            "identifier": identifier,
+                        }
+                    )
+        return results
+
     def enumerate_members(self, max_pages: int = DEFAULT_MAX_PAGES) -> list[dict]:
         """List the other members of the groups this token can reach (lateral moves).
 

@@ -923,6 +923,67 @@ one):
 }
 ```
 
+### Dependency-vulnerability audit (`--audit-dependabot-alerts`)
+
+Where `--audit-branch-protection` and `--audit-codeowners` report **process**
+gaps (would a bad push be stopped before it lands?), this reports a
+**known-vulnerability attack surface**: every open alert is a publicly-documented
+CVE/GHSA in a dependency the repo *actually ships*, with a known severity and
+(often) a known exploit. For an authorized engagement this is a high-signal
+triage axis — a reachable repo carrying open `critical` alerts is where a real
+intrusion is most likely to start, and the alert names the exact package and
+advisory so the operator can map it to an exploit without further probing.
+
+Pass `--audit-dependabot-alerts` to `validate-token` and covenant walks the repos
+the token can reach, listing each one's **open** dependency alerts with a
+**read-only** query:
+
+| SCM       | Endpoint                                                              | Surface mapped                                          |
+|-----------|----------------------------------------------------------------------|---------------------------------------------------------|
+| GitHub    | `GET /repos/{owner}/{repo}/dependabot/alerts?state=open`             | Dependabot alerts (open)                                |
+| GitLab    | `GET /api/v4/projects/{id}/vulnerabilities?state=detected`          | dependency-scanning vulnerabilities (detected)          |
+| Bitbucket | *(none — no first-party dependency-alert API)*                       | empty result + an explanatory `warnings` entry          |
+
+Each entry is normalized to
+`{"repo", "package", "ecosystem", "severity", "state", "identifier"}`. `severity`
+is the advisory's CVSS band (`critical`/`high`/`medium`/`low`, lower-cased for
+cross-provider parity) and `identifier` is the GHSA/CVE advisory handle.
+
+> **Only the advisory handle is surfaced — never a credential.** `identifier` is
+> a public CVE/GHSA id, not a secret. A repo with the feature disabled or out of
+> the token's scope answers `403`/`404`; covenant **skips that repo** rather than
+> failing the whole audit, so a partial-permission token still reports every repo
+> it can read. **Bitbucket Cloud** has no first-party dependency-alert API (its
+> dependency security runs through third-party Pipelines integrations), so the
+> result is empty there and a non-fatal `warnings` note explains that the empty
+> result reflects a platform limitation, not a clean bill of health.
+
+Only OPEN alerts are requested, and only alert metadata is read — covenant never
+dismisses, fixes, or creates an alert. The walk is bounded by the same
+`--max-pages` flag and honors the scope guardrail and automatic rate-limit
+retry/backoff. Like the other `--enumerate-*`/`--audit-*` flags the feature is
+purely additive (all may be combined): without the flag the output is unchanged,
+and with it the v0.1 `scopes`/`user`/`admin` fields are untouched — only the
+`dependabot_alerts` array is added.
+
+```bash
+covenant github validate-token \
+  --scope-file scope.txt \
+  --audit-dependabot-alerts \
+  --token-env COVENANT_TOKEN
+```
+
+Example `dependabot_alerts` array (an open critical alert; a repo with the
+feature disabled is silently skipped, not listed):
+
+```json
+{
+  "dependabot_alerts": [
+    { "repo": "acme-corp/spellbook", "package": "requests", "ecosystem": "pip", "severity": "critical", "state": "open", "identifier": "GHSA-xxxx-yyyy-zzzz" }
+  ]
+}
+```
+
 ### Deployment-environment audit (`--audit-actions-environments`)
 
 A deployment **environment** (GitHub Actions "Environments", GitLab project
