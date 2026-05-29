@@ -403,6 +403,65 @@ class _GitHubHandler(BaseHTTPRequestHandler):
                     ],
                 },
             )
+        elif parsed.path.startswith("/repos/") and parsed.path.endswith(
+            "/environments"
+        ):
+            # Deployment-environment audit (--audit-actions-environments).
+            # GitHub wraps environments in {"total_count", "environments"}. The
+            # spellbook 'production' env is WEAK: no protection rules and no
+            # deployment_branch_policy (any branch can deploy and read its
+            # secrets unreviewed — the high-signal gap). The grimoire 'production'
+            # env is STRONG: required reviewers, a wait timer, and a
+            # protected-branch deployment policy.
+            repo = "/".join(parsed.path.split("/")[2:4])
+            weak = repo.endswith("/spellbook")
+            if weak:
+                self._json(
+                    200,
+                    {
+                        "total_count": 1,
+                        "environments": [
+                            {
+                                "id": 500,
+                                "name": "production",
+                                "protection_rules": [],
+                                "deployment_branch_policy": None,
+                            },
+                        ],
+                    },
+                )
+            else:
+                self._json(
+                    200,
+                    {
+                        "total_count": 1,
+                        "environments": [
+                            {
+                                "id": 501,
+                                "name": "production",
+                                "protection_rules": [
+                                    {
+                                        "id": 1,
+                                        "type": "required_reviewers",
+                                        "reviewers": [
+                                            {"type": "User"},
+                                            {"type": "Team"},
+                                        ],
+                                    },
+                                    {
+                                        "id": 2,
+                                        "type": "wait_timer",
+                                        "wait_timer": 30,
+                                    },
+                                ],
+                                "deployment_branch_policy": {
+                                    "protected_branches": True,
+                                    "custom_branch_policies": False,
+                                },
+                            },
+                        ],
+                    },
+                )
         elif parsed.path == "/user/orgs":
             # Org/blast-radius enumeration (--enumerate-orgs). Supports the
             # MULTIPAGE_PREFIX is not relevant here (no query); serve a single
@@ -701,6 +760,34 @@ class _GitLabHandler(BaseHTTPRequestHandler):
                         "value": "shouldnotappear",
                         "protected": False,
                     },
+                ],
+                headers={"X-Page": "1", "X-Next-Page": "", "X-Total-Pages": "1"},
+            )
+        elif parsed.path.startswith("/api/v4/projects/") and parsed.path.endswith(
+            "/protected_environments"
+        ):
+            # Protected-environment listing (--audit-actions-environments).
+            # 'production' is protected with 2 required approvals; 'staging' is
+            # NOT in this list (so it reads as unprotected — branch_policy 'all').
+            self._json(
+                200,
+                [
+                    {
+                        "name": "production",
+                        "required_approval_count": 2,
+                    },
+                ],
+                headers={"X-Page": "1", "X-Next-Page": "", "X-Total-Pages": "1"},
+            )
+        elif parsed.path.startswith("/api/v4/projects/") and parsed.path.endswith(
+            "/environments"
+        ):
+            # Project-environment listing (--audit-actions-environments).
+            self._json(
+                200,
+                [
+                    {"id": 1, "name": "production"},
+                    {"id": 2, "name": "staging"},
                 ],
                 headers={"X-Page": "1", "X-Next-Page": "", "X-Total-Pages": "1"},
             )
@@ -1031,6 +1118,32 @@ class _BitbucketHandler(BaseHTTPRequestHandler):
                         },
                     ],
                     "size": 1,
+                },
+            )
+        elif parsed.path.startswith("/2.0/repositories/") and parsed.path.endswith(
+            "/environments"
+        ):
+            # Deployment-environment audit (--audit-actions-environments).
+            # 'production' has an admin-only deploy restriction (required_reviewers
+            # True); 'staging' has none (unreviewed deploys). Bitbucket Cloud has
+            # no per-env reviewer count / wait timer / branch policy, so those
+            # fields are constant (0/0/'all').
+            self._json(
+                200,
+                {
+                    "values": [
+                        {
+                            "uuid": "{env-prod}",
+                            "name": "production",
+                            "restrictions": {"admin_only": True},
+                        },
+                        {
+                            "uuid": "{env-stage}",
+                            "name": "staging",
+                            "restrictions": {"admin_only": False},
+                        },
+                    ],
+                    "size": 2,
                 },
             )
         elif parsed.path == "/2.0/workspaces":

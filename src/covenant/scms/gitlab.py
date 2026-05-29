@@ -692,6 +692,113 @@ class GitLabClient(BaseSCMClient):
                     )
         return results
 
+    def audit_actions_environments(
+        self, max_pages: int = DEFAULT_MAX_PAGES
+    ) -> list[dict]:
+        """Audit the deployment-environment gate posture of reachable projects.
+
+        GitLab's analogue of a GitHub Actions deployment environment is the
+        project *environment*; the gate that protects it is the *protected
+        environment* (``GET /api/v4/projects/{id}/protected_environments``),
+        which carries a ``required_approval_count`` (how many approvers must sign
+        off before a deployment proceeds). An environment that is NOT protected,
+        or is protected with a zero approval count, lets a pipeline deploy — and
+        read the environment-scoped CI/CD variables — without human review, the
+        environment-scoped, secret-exfiltration counterpart to
+        :meth:`audit_branch_protection`.
+
+        We walk the projects the token is a member of
+        (``GET /api/v4/projects?membership=true``), fetch each project's
+        protected-environment set once (failing soft to "none protected" for a
+        low-privilege token), then list ``GET /api/v4/projects/{id}/environments``
+        and map each into the same normalized
+        ``{"repo", "environment", "required_reviewers",
+        "required_reviewer_count", "wait_timer", "branch_policy"}`` shape as the
+        other SCMs. ``required_reviewers`` is ``True`` when the environment is
+        protected with at least one required approval; ``required_reviewer_count``
+        is that approval count. GitLab has no per-environment deploy *wait timer*
+        in the GitHub sense, so ``wait_timer`` is always ``0``. ``branch_policy``
+        is ``"protected"`` when the environment is in the protected set (deploys
+        are gated to authorized branches/users) and ``"all"`` otherwise (any
+        pipeline may deploy). Read-only — only GETs policy metadata.
+        """
+        results: list[dict] = []
+        for project in self._reachable_projects(max_pages=max_pages):
+            project_id = project["id"]
+            repo = project["repo"]
+            protected = self._protected_environments(
+                project_id, max_pages=max_pages
+            )
+            env_path = f"/api/v4/projects/{project_id}/environments"
+            env_params = {"per_page": _PER_PAGE, "page": 1}
+            for resp in self._get_paginated(
+                env_path,
+                params=env_params,
+                max_pages=max_pages,
+                next_request=_gitlab_next(env_path, env_params),
+            ):
+                body = resp.json()
+                if not isinstance(body, list):
+                    continue
+                for item in body:
+                    name = item.get("name")
+                    if not name:
+                        continue
+                    approvals = protected.get(name, 0)
+                    is_protected = name in protected
+                    results.append(
+                        {
+                            "repo": repo,
+                            "environment": name,
+                            "required_reviewers": approvals > 0,
+                            "required_reviewer_count": approvals,
+                            "wait_timer": 0,
+                            "branch_policy": "protected"
+                            if is_protected
+                            else "all",
+                        }
+                    )
+        return results
+
+    def _protected_environments(
+        self, project_id, max_pages: int = DEFAULT_MAX_PAGES
+    ) -> dict[str, int]:
+        """Map protected-environment name -> required approval count for a project.
+
+        ``GET /api/v4/projects/{id}/protected_environments`` lists the
+        environments whose deployments are gated, each with a
+        ``required_approval_count``. The endpoint requires Maintainer on the
+        project, so a low-privilege token gets a 403; we fail soft to an empty
+        map (everything reads as unprotected) rather than aborting the audit.
+        """
+        out: dict[str, int] = {}
+        path = f"/api/v4/projects/{project_id}/protected_environments"
+        params = {"per_page": _PER_PAGE, "page": 1}
+        try:
+            pages = list(
+                self._get_paginated(
+                    path,
+                    params=params,
+                    max_pages=max_pages,
+                    next_request=_gitlab_next(path, params),
+                )
+            )
+        except SCMError:
+            return out
+        for resp in pages:
+            body = resp.json()
+            if not isinstance(body, list):
+                continue
+            for item in body:
+                name = item.get("name")
+                if not name:
+                    continue
+                try:
+                    out[name] = int(item.get("required_approval_count", 0) or 0)
+                except (ValueError, TypeError):
+                    out[name] = 0
+        return out
+
     def audit_repo_visibility(
         self, max_pages: int = DEFAULT_MAX_PAGES
     ) -> list[dict]:

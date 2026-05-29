@@ -538,6 +538,63 @@ class BitbucketClient(BaseSCMClient):
                     )
         return results
 
+    def audit_actions_environments(
+        self, max_pages: int = DEFAULT_MAX_PAGES
+    ) -> list[dict]:
+        """Audit the deployment-environment gate posture of reachable repos.
+
+        Bitbucket Cloud's analogue of a GitHub Actions deployment environment is
+        the Pipelines *deployment environment* (``GET
+        /2.0/repositories/{full_name}/environments``), where the
+        environment-scoped Pipelines variables surfaced by
+        :meth:`enumerate_actions_secrets` live. The gate that protects a
+        deployment is the environment's *restrictions* (the ``admin_only`` lock
+        on the deployment gate): when set, only an admin may approve a deployment
+        to that environment; when unset, any pipeline run may deploy and read the
+        environment's secured variables unreviewed. This is the
+        environment-scoped, secret-exfiltration counterpart to
+        :meth:`audit_branch_protection`.
+
+        We walk the repositories the token is a member of
+        (``GET /2.0/repositories?role=member``) and, for each, list its
+        environments, mapping each into the same normalized
+        ``{"repo", "environment", "required_reviewers",
+        "required_reviewer_count", "wait_timer", "branch_policy"}`` shape as the
+        other SCMs. ``required_reviewers`` is ``True`` when the environment's
+        deployment gate is admin-restricted (the ``restrictions.admin_only``
+        flag), the nearest human-gate signal Bitbucket Cloud exposes.
+        Bitbucket Cloud has no per-environment reviewer *count*, deploy *wait
+        timer*, or deployment *branch policy*, so ``required_reviewer_count`` and
+        ``wait_timer`` are always ``0`` and ``branch_policy`` is always ``"all"``
+        — the fields are kept for cross-provider shape parity. Read-only — only
+        GETs policy metadata.
+        """
+        results: list[dict] = []
+        for full_name in self._reachable_repos(max_pages=max_pages):
+            for resp in self._get_paginated(
+                f"/2.0/repositories/{full_name}/environments",
+                params={"pagelen": 100},
+                max_pages=max_pages,
+                next_request=_bitbucket_next,
+            ):
+                for item in resp.json().get("values", []):
+                    name = item.get("name")
+                    if not name:
+                        continue
+                    restrictions = item.get("restrictions") or {}
+                    admin_only = bool(restrictions.get("admin_only", False))
+                    results.append(
+                        {
+                            "repo": full_name,
+                            "environment": name,
+                            "required_reviewers": admin_only,
+                            "required_reviewer_count": 0,
+                            "wait_timer": 0,
+                            "branch_policy": "all",
+                        }
+                    )
+        return results
+
     def audit_repo_visibility(
         self, max_pages: int = DEFAULT_MAX_PAGES
     ) -> list[dict]:

@@ -594,10 +594,48 @@ fuller blast-radius picture — rather than reopening closed items.
 > `--help` documentation. Full suite: 267 passing (255 baseline + 12 new), zero
 > regressions. README updated with a "Repository-visibility audit" subsection.
 
+### Deployment-environment audit in validate-token (`--audit-actions-environments`) — ✅ IMPLEMENTED (Phase 2, Rotation 20)
+
+> **Status: shipped.** A read-only `--audit-actions-environments` flag on
+> `validate-token` is the environment-scoped, secret-exfiltration counterpart
+> to `--audit-branch-protection`: where branch protection gates code landing on
+> a branch, this gates *deployments* reaching the environment-scoped CI/CD
+> secrets that `--enumerate-actions-secrets` finds. A deployment environment is
+> where the most sensitive secrets live (production cloud keys, deploy tokens);
+> its protection rules decide whether a workflow may deploy to it and READ those
+> secrets. The high-signal finding is `required_reviewers=false` + a permissive
+> `branch_policy="all"`, meaning any branch — including an attacker's feature
+> branch carrying a malicious workflow — can deploy and exfiltrate the
+> environment's secrets unreviewed. It walks the repos the token can reach and
+> adds a normalized `actions_environments` array of `{repo, environment,
+> required_reviewers, required_reviewer_count, wait_timer, branch_policy}`
+> entries. GitHub walks `GET /repos/{owner}/{repo}/environments` (maps the
+> `required_reviewers`/`wait_timer` protection rules and the
+> `deployment_branch_policy` → `protected`/`custom`/`all`); GitLab walks `GET
+> /api/v4/projects/{id}/environments` plus `.../protected_environments`
+> (`required_approval_count` → reviewer count, `wait_timer` always 0, failing
+> soft to "none protected" for a low-privilege token); Bitbucket walks `GET
+> /2.0/repositories/{full_name}/environments` (the `restrictions.admin_only`
+> deploy gate → `required_reviewers`, with `required_reviewer_count`/`wait_timer`
+> 0 and `branch_policy` "all" for shape parity, as Bitbucket Cloud exposes no
+> per-env count/timer/branch-policy). Only policy metadata is read — no
+> deployment is ever created, edited, or triggered, and no secret VALUE is read.
+> The walk reuses the shared paginator, scope guardrail and rate-limit backoff,
+> is bounded by `--max-pages`, and composes with every other
+> `--enumerate-*`/`--audit-*` flag. Purely additive: the v0.1
+> `scopes`/`user`/`admin` fields are untouched and the `actions_environments`
+> array appears only when the flag is set. Tests:
+> `tests/test_audit_actions_environments.py` covers each client's normalized
+> shape, the weak-vs-strong posture mapping across all three SCMs, the
+> `_github_branch_policy` helper matrix (null/protected/custom/both), the
+> no-secret-leak invariant, e2e presence-only-when-requested, composition with
+> the other audits, the scope-guardrail gate (exit 2), and `--help`
+> documentation. Full suite: 279 passing (267 baseline + 12 new), zero
+> regressions. README updated with a "Deployment-environment audit" subsection.
+
 **Remaining candidate directions (unimplemented, for future laps):** OAuth-app /
-authorized-application enumeration, GitHub Actions *environments* and their
-protection rules, and commit-history secret scanning (`git log` blob walking
-beyond code-search fragments).
+authorized-application enumeration, and commit-history secret scanning (`git log`
+blob walking beyond code-search fragments).
 
 ## Follow-on fixes
 
