@@ -1056,6 +1056,75 @@ Example `packages` array (npm + pip dependencies declared by one repo):
 }
 ```
 
+### Code-scanning-alert audit (`--audit-code-scanning-alerts`)
+
+Where `--audit-dependabot-alerts` reports a known-vulnerability surface in a
+repo's **third-party dependencies**, `--audit-code-scanning-alerts` reports the
+static-analyzer findings in the repo's **own first-party source** — an injection
+sink, a crypto misuse, a path-traversal, a deserialization flaw. These are bugs
+in code the org itself controls, named by **rule** and **source location**, so a
+finding maps straight to where a real exploit is likely to live. It is the
+code-flaw triage axis the dependency and credential audits do not cover.
+
+Pass `--audit-code-scanning-alerts` to `validate-token` and covenant walks the
+repos the token can reach, listing each one's **open** code-scanning alerts with
+a **read-only** query:
+
+| SCM       | Endpoint                                                                                 | Surface read                       |
+|-----------|------------------------------------------------------------------------------------------|------------------------------------|
+| GitHub    | `GET /repos/{owner}/{repo}/code-scanning/alerts?state=open`                              | code-scanning / CodeQL alerts      |
+| GitLab    | `GET /api/v4/projects/{id}/vulnerabilities?report_type=sast&state=detected`              | SAST findings (Vulnerability Report) |
+| Bitbucket | *(unsupported — no first-party static-analysis-alert API; empty result + warning)*       | —                                  |
+
+Each alert is normalized to
+`{"repo", "rule_id", "rule_name", "severity", "state", "html_url"}`. `rule_id` is
+the analyzer's rule identifier (e.g. `py/sql-injection`), `rule_name` its human
+description, and `severity` prefers the security-severity band
+(`critical`/`high`/`medium`/`low`), falling back to the alert's generic severity
+(`error`/`warning`/`note`) when the band is absent — the decisive triage field.
+`html_url` points at the alert in the provider UI, at the finding's source
+location — never at a credential.
+
+> **Only open alerts, only metadata.** A dismissed/fixed alert is not live
+> surface, so only `state=open`/`detected` is requested. A repo with the feature
+> disabled, **never analyzed**, or out of the token's scope answers HTTP 403/404
+> for that repo; covenant **skips it** rather than failing the whole audit, so a
+> partial-permission token still reports every repo it can read. The audit is
+> read-only — it only GETs alert metadata and never dismisses, fixes, or creates
+> an alert. Bitbucket Cloud has no first-party static-analysis-alert API (it is
+> delivered through third-party Pipelines integrations), so the result is empty
+> there with an explanatory warning rather than a misleading clean bill of health.
+
+The walk is bounded by the same `--max-pages` flag and honors the scope guardrail
+and automatic rate-limit retry/backoff. Like the other `--enumerate-*`/`--audit-*`
+flags the feature is purely additive (all may be combined): without the flag the
+output is unchanged, and with it the v0.1 `scopes`/`user`/`admin` fields are
+untouched — only the `code_scanning_alerts` array is added.
+
+```bash
+covenant github validate-token \
+  --scope-file scope.txt \
+  --audit-code-scanning-alerts \
+  --token-env COVENANT_TOKEN
+```
+
+Example `code_scanning_alerts` array (one open critical CodeQL finding):
+
+```json
+{
+  "code_scanning_alerts": [
+    {
+      "repo": "acme-corp/spellbook",
+      "rule_id": "py/sql-injection",
+      "rule_name": "SQL query built from user-controlled sources",
+      "severity": "critical",
+      "state": "open",
+      "html_url": "https://github.com/acme-corp/spellbook/security/code-scanning/42"
+    }
+  ]
+}
+```
+
 ### Deployment-environment audit (`--audit-actions-environments`)
 
 A deployment **environment** (GitHub Actions "Environments", GitLab project

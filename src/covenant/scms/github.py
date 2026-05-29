@@ -1064,6 +1064,114 @@ class GitHubClient(BaseSCMClient):
                 )
         return records
 
+    def audit_code_scanning_alerts(
+        self, max_pages: int = DEFAULT_MAX_PAGES
+    ) -> list[dict]:
+        """Audit the OPEN code-scanning alerts on the reachable repos.
+
+        Where ``--audit-dependabot-alerts`` reports a KNOWN-VULNERABILITY surface
+        in a repo's *third-party dependencies* and ``--audit-secret-scanning``
+        reports already-detected leaked credentials, code-scanning alerts report
+        the vulnerabilities the provider's static analyzer (GitHub Advanced
+        Security / CodeQL, or a third-party SAST tool uploading SARIF) found in
+        the repo's *own first-party source*: an injection sink, a hard-coded
+        crypto misuse, a path-traversal, a deserialization flaw. For an authorized
+        engagement this is a high-signal triage axis the dependency and
+        credential audits do not cover — an open ``error``/``critical`` code-
+        scanning alert in a reachable repo names the exact rule and source
+        location where a real exploit is most likely to live, and (unlike a
+        dependency CVE) it is a bug in code the org itself controls.
+
+        Walks the repositories the token can reach (``GET /user/repos``) and, for
+        each, lists its OPEN code-scanning alerts
+        (``GET /repos/{owner}/{repo}/code-scanning/alerts?state=open``), returning
+        a normalized list of
+        ``{"repo", "rule_id", "rule_name", "severity", "state", "html_url"}``
+        dicts. ``rule_id`` is the analyzer's rule identifier (e.g.
+        ``py/sql-injection``), ``rule_name`` its human description, and
+        ``severity`` the rule's security-severity band, preferring the
+        ``security_severity_level`` (``critical``/``high``/``medium``/``low``)
+        and falling back to the alert's generic ``severity``
+        (``error``/``warning``/``note``) when the security band is absent — the
+        decisive triage field. ``html_url`` points at the alert in the GitHub UI,
+        at the finding's source location — never at a credential.
+
+        Only OPEN alerts are requested — a dismissed/fixed alert is not live
+        surface. A repo with code scanning disabled (or a token lacking the
+        ``security_events`` scope, or a non-GHAS repo with no uploaded SARIF)
+        answers HTTP 403/404 for that repo; covenant skips it rather than failing
+        the whole audit, so a partial-permission token still reports what it can
+        see. Read-only — it only GETs alert metadata and never dismisses, fixes,
+        or creates an alert.
+        """
+        results: list[dict] = []
+        for full_name in self._reachable_repos(max_pages=max_pages):
+            for record in self._code_scanning_alerts_for_repo(
+                full_name, max_pages=max_pages
+            ):
+                results.append(record)
+        return results
+
+    def _code_scanning_alerts_for_repo(
+        self, full_name: str, max_pages: int = DEFAULT_MAX_PAGES
+    ) -> list[dict]:
+        """List one repo's open code-scanning alerts, skipping repos we can't read.
+
+        Code-scanning alerts are only readable when the feature is enabled on the
+        repo AND the token carries the ``security_events`` (or, for public repos,
+        ``public_repo``) scope; otherwise GitHub answers 403/404. A repo on which
+        code scanning has simply never run answers 404 with a ``"no analysis
+        found"`` message. We swallow those two statuses for a single repo and
+        return no alerts for it rather than aborting the whole audit, so a token
+        with mixed permissions still reports every repo it CAN read.
+        """
+        records: list[dict] = []
+        url = f"{self.base_url}/repos/{full_name}/code-scanning/alerts"
+        probe = self._request_with_retry(
+            url, {"state": "open", "per_page": 100}, self._headers()
+        )
+        # A repo with code scanning disabled, never-run, or a token without the
+        # security_events scope yields 403/404 — skip it, do not fail the run.
+        if probe.status_code in (403, 404):
+            return records
+        if probe.status_code == 401:
+            raise SCMError("authentication failed (401) — check the token")
+        if probe.status_code >= 400:
+            raise SCMError(
+                f"{self.base_url} returned HTTP {probe.status_code} "
+                f"for {full_name} code-scanning alerts"
+            )
+        for resp in self._get_paginated(
+            f"/repos/{full_name}/code-scanning/alerts",
+            params={"state": "open", "per_page": 100},
+            max_pages=max_pages,
+            next_request=_next_link,
+        ):
+            body = resp.json()
+            if not isinstance(body, list):
+                continue
+            for item in body:
+                rule = item.get("rule") or {}
+                # Prefer the security-severity band (critical/high/medium/low);
+                # fall back to the alert's generic severity (error/warning/note).
+                severity = (
+                    rule.get("security_severity_level")
+                    or rule.get("severity")
+                    or item.get("severity")
+                )
+                records.append(
+                    {
+                        "repo": full_name,
+                        "rule_id": rule.get("id"),
+                        "rule_name": rule.get("name")
+                        or rule.get("description"),
+                        "severity": severity,
+                        "state": item.get("state", "open"),
+                        "html_url": item.get("html_url"),
+                    }
+                )
+        return records
+
     def enumerate_members(self, max_pages: int = DEFAULT_MAX_PAGES) -> list[dict]:
         """List the other members of the orgs this token can reach (lateral moves).
 

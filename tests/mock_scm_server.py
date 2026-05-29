@@ -640,6 +640,42 @@ class _GitHubHandler(BaseHTTPRequestHandler):
             else:
                 # grimoire: secret scanning disabled / token lacks security_events.
                 self._json(403, {"message": "Secret scanning is disabled"})
+        elif parsed.path.startswith("/repos/") and parsed.path.endswith(
+            "/code-scanning/alerts"
+        ):
+            # Code-scanning audit (--audit-code-scanning-alerts). The spellbook
+            # repo has one OPEN CRITICAL CodeQL alert in its own source (the
+            # high-signal first-party-code-flaw case); the grimoire repo has code
+            # scanning DISABLED / never-run, which GitHub answers with 404 —
+            # covenant must SKIP that repo, not fail the whole audit. The API
+            # returns the rule's id/name/severity and the alert html_url; only
+            # that metadata is surfaced, never a credential.
+            repo = "/".join(parsed.path.split("/")[2:4])
+            if repo.endswith("/spellbook"):
+                self._json(
+                    200,
+                    [
+                        {
+                            "number": 42,
+                            "state": "open",
+                            "rule": {
+                                "id": "py/sql-injection",
+                                "name": "SQL query built from user-controlled "
+                                "sources",
+                                "severity": "error",
+                                "security_severity_level": "critical",
+                                "description": "SQL injection",
+                            },
+                            "html_url": (
+                                "https://github.com/acme-corp/spellbook/"
+                                "security/code-scanning/42"
+                            ),
+                        },
+                    ],
+                )
+            else:
+                # grimoire: code scanning disabled / never run / token lacks scope.
+                self._json(404, {"message": "no analysis found"})
         elif parsed.path.startswith("/repos/") and "/contents/" in parsed.path:
             # CODEOWNERS-coverage audit (--audit-codeowners). GitHub serves file
             # content as a JSON object with base64-encoded `content`. covenant
@@ -1088,11 +1124,46 @@ class _GitLabHandler(BaseHTTPRequestHandler):
         elif parsed.path.startswith("/api/v4/projects/") and parsed.path.endswith(
             "/vulnerabilities"
         ):
-            # The vulnerabilities endpoint backs two audits, distinguished by the
-            # report_type query param:
+            # The vulnerabilities endpoint backs three audits, distinguished by
+            # the report_type query param:
             #   * no/dependency_scanning filter -> --audit-dependabot-alerts
             #   * report_type=secret_detection   -> --audit-secret-scanning
+            #   * report_type=sast               -> --audit-code-scanning-alerts
             report_type = params.get("report_type", [None])[0]
+            if report_type == "sast":
+                # Code-scanning audit (--audit-code-scanning-alerts). GitLab's
+                # analogue of a GitHub code-scanning/CodeQL alert is a detected
+                # SAST vulnerability — a flaw the static analyzer found in the
+                # project's OWN source. The mock project has one OPEN (detected)
+                # CRITICAL finding. covenant lower-cases severity to match the
+                # cross-provider shape and surfaces the rule id/name + web_url,
+                # never a credential.
+                self._json(
+                    200,
+                    [
+                        {
+                            "id": 9200,
+                            "title": "SQL Injection",
+                            "severity": "Critical",
+                            "state": "detected",
+                            "report_type": "sast",
+                            "web_url": (
+                                "https://gitlab.com/acme/spell-book-1/-/"
+                                "security/vulnerabilities/9200"
+                            ),
+                            "finding": {
+                                "name": "SQL Injection",
+                                "identifier": "rules.sql_injection",
+                            },
+                        },
+                    ],
+                    headers={
+                        "X-Page": "1",
+                        "X-Next-Page": "",
+                        "X-Total-Pages": "1",
+                    },
+                )
+                return
             if report_type == "secret_detection":
                 # Secret-detection audit (--audit-secret-scanning). GitLab's
                 # analogue of a GitHub secret-scanning alert is a detected
