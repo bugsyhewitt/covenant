@@ -467,6 +467,86 @@ class GitHubClient(BaseSCMClient):
                     )
         return results
 
+    def enumerate_actions_secrets(
+        self, max_pages: int = DEFAULT_MAX_PAGES
+    ) -> list[dict]:
+        """List the GitHub Actions secret NAMES this token can reach.
+
+        Where the SSH/GPG/deploy-key enumerations map *key* material and the
+        webhook enumeration maps the exfiltration surface, CI/CD secrets are the
+        credential surface that powers the build pipeline: cloud keys, registry
+        passwords, signing tokens and deploy credentials all live here, and an
+        attacker who can read or, worse, exfiltrate them via a malicious workflow
+        gains exactly the lateral-movement and supply-chain reach the pipeline
+        had. A repo or org carrying a long list of Actions secrets is a
+        high-value, high-blast-radius target.
+
+        This walks both axes the token can reach:
+
+        * **org-level** secrets — ``GET /orgs/{org}/actions/secrets`` for each
+          org from :meth:`enumerate_orgs` (``scope="org"``);
+        * **repo-level** secrets — ``GET /repos/{owner}/{repo}/actions/secrets``
+          for each repo from :meth:`_reachable_repos` (``scope="repo"``).
+
+        It returns a normalized list of ``{"scope", "owner", "name", "protected"}``
+        dicts. Critically, the GitHub API returns only the secret *name* and
+        metadata — never the value — and covenant surfaces ONLY the name (the
+        excessive-exposure signal). The ``protected`` field is ``True`` for an
+        org secret whose ``visibility`` is restricted to selected repositories
+        (a tighter blast radius); repo secrets have no such field and report
+        ``False``. The audit is read-only and never reads or echoes a value.
+        """
+        results: list[dict] = []
+        for org in self.enumerate_orgs(max_pages=max_pages):
+            owner = org.get("name")
+            if not owner:
+                continue
+            for resp in self._get_paginated(
+                f"/orgs/{owner}/actions/secrets",
+                params={"per_page": 100},
+                max_pages=max_pages,
+                next_request=_next_link,
+            ):
+                body = resp.json()
+                if not isinstance(body, dict):
+                    continue
+                for item in body.get("secrets", []):
+                    name = item.get("name")
+                    if not name:
+                        continue
+                    results.append(
+                        {
+                            "scope": "org",
+                            "owner": owner,
+                            "name": name,
+                            "protected": item.get("visibility", "all")
+                            == "selected",
+                        }
+                    )
+        for full_name in self._reachable_repos(max_pages=max_pages):
+            for resp in self._get_paginated(
+                f"/repos/{full_name}/actions/secrets",
+                params={"per_page": 100},
+                max_pages=max_pages,
+                next_request=_next_link,
+            ):
+                body = resp.json()
+                if not isinstance(body, dict):
+                    continue
+                for item in body.get("secrets", []):
+                    name = item.get("name")
+                    if not name:
+                        continue
+                    results.append(
+                        {
+                            "scope": "repo",
+                            "owner": full_name,
+                            "name": name,
+                            "protected": False,
+                        }
+                    )
+        return results
+
     def validate_token(self) -> dict:
         resp = self._get("/user")
         user = resp.json()

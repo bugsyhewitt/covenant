@@ -528,9 +528,47 @@ fuller blast-radius picture — rather than reopening closed items.
 > Full suite: 244 passing (233 baseline + 11 new), zero regressions. README
 > updated with a "Branch-protection audit" subsection.
 
+### CI/CD secret enumeration in validate-token (`--enumerate-actions-secrets`) — ✅ IMPLEMENTED (Phase 2, Rotation 18)
+
+> **Status: shipped.** A read-only `--enumerate-actions-secrets` flag on
+> `validate-token` maps the build-pipeline credential surface — the next
+> blast-radius axis after SSH/GPG/deploy keys (key material) and webhooks
+> (exfiltration). CI/CD secrets hold the cloud keys, registry passwords and
+> signing/deploy tokens the pipeline runs with, so a repo or org carrying a long
+> list is a high-value lateral-movement and supply-chain target: an attacker who
+> can read or exfiltrate them via a malicious workflow inherits the pipeline's
+> reach. It walks BOTH the org/group/workspace axis and the repo/project axis the
+> token can reach and adds an `actions_secrets` array of
+> `{scope, owner, name, protected}` entries. GitHub walks `GET
+> /orgs/{org}/actions/secrets` (scope `org`, reusing `enumerate_orgs`) + `GET
+> /repos/{owner}/{repo}/actions/secrets` (scope `repo`, reusing
+> `_reachable_repos`), mapping `visibility=="selected"` to `protected`; GitLab
+> walks `GET /api/v4/groups/{id}/variables` + `GET
+> /api/v4/projects/{id}/variables`, mapping the variable `protected` flag;
+> Bitbucket walks `GET /2.0/workspaces/{slug}/pipelines-config/variables` + `GET
+> /2.0/repositories/{full_name}/pipelines-config/variables`, mapping the `secured`
+> flag. **The decisive invariant is name-only disclosure**: covenant surfaces ONLY
+> the secret NAME and metadata, never the VALUE — the provider APIs omit secured
+> values and covenant emits names only. Variable-listing endpoints a low-privilege
+> token can't read fail soft to an empty result (GitLab/Bitbucket) so the audit
+> degrades gracefully. The walk reuses the shared paginator, scope guardrail and
+> rate-limit backoff, is bounded by `--max-pages`, and composes with every other
+> `--enumerate-*`/`--audit-*` flag. Purely additive: the v0.1
+> `scopes`/`user`/`admin` fields are untouched and the `actions_secrets` array
+> appears only when the flag is set. Tests:
+> `tests/test_enumerate_actions_secrets.py` covers each client's normalized shape,
+> the org-vs-repo `scope` split, the `protected` mapping across all three SCMs, the
+> no-value-leak invariant (a planted `shouldnotappear` value never reaches output
+> and no `value` field is present), e2e presence-only-when-requested, composition
+> with the full `--enumerate-*` family, the scope-guardrail gate (exit 2), and
+> `--help` documentation. Full suite: 255 passing (244 baseline + 11 new), zero
+> regressions. README updated with a "CI/CD secret enumeration" subsection.
+
 **Remaining candidate directions (unimplemented, for future laps):** OAuth-app /
-authorized-application enumeration, and commit-history secret scanning (`git log`
-blob walking beyond code-search fragments).
+authorized-application enumeration, GitHub Actions *environments* and their
+protection rules, repository-visibility audit (public repos in an org), and
+commit-history secret scanning (`git log` blob walking beyond code-search
+fragments).
 
 ## Follow-on fixes
 

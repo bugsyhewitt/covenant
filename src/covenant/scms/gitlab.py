@@ -600,6 +600,98 @@ class GitLabClient(BaseSCMClient):
                     )
         return results
 
+    def enumerate_actions_secrets(
+        self, max_pages: int = DEFAULT_MAX_PAGES
+    ) -> list[dict]:
+        """List the GitLab CI/CD variable NAMES this token can reach.
+
+        GitLab's analogue of a GitHub Actions secret is the *CI/CD variable*:
+        the credentials, tokens and config the ``.gitlab-ci.yml`` pipeline runs
+        with. They live at both the *group* level
+        (``GET /api/v4/groups/{id}/variables``) and the *project* level
+        (``GET /api/v4/projects/{id}/variables``). A project or group carrying a
+        long list of variables is a high-value, high-blast-radius target: an
+        attacker who can read or exfiltrate them via a malicious pipeline gains
+        the pipeline's lateral-movement and supply-chain reach.
+
+        We walk the groups from :meth:`enumerate_orgs` (``scope="org"``) and the
+        projects from :meth:`_reachable_projects` (``scope="repo"``), returning
+        the same normalized ``{"scope", "owner", "name", "protected"}`` shape as
+        the other SCMs. The GitLab API returns each variable's ``key`` (name),
+        ``value`` and a ``protected`` flag; covenant surfaces ONLY the ``key`` as
+        ``name`` (the excessive-exposure signal) and the ``protected`` flag — the
+        secret ``value`` is never read into the output. Endpoints a low-privilege
+        token can't read (variables typically require Maintainer) fail soft to an
+        empty result so the audit still reports what it can see. Read-only.
+        """
+        results: list[dict] = []
+        for group in self.enumerate_orgs(max_pages=max_pages):
+            owner = group.get("name")
+            if not owner:
+                continue
+            path = f"/api/v4/groups/{_group_id(owner)}/variables"
+            params = {"per_page": _PER_PAGE, "page": 1}
+            try:
+                pages = list(
+                    self._get_paginated(
+                        path,
+                        params=params,
+                        max_pages=max_pages,
+                        next_request=_gitlab_next(path, params),
+                    )
+                )
+            except SCMError:
+                continue
+            for resp in pages:
+                body = resp.json()
+                if not isinstance(body, list):
+                    continue
+                for item in body:
+                    key = item.get("key")
+                    if not key:
+                        continue
+                    results.append(
+                        {
+                            "scope": "org",
+                            "owner": owner,
+                            "name": key,
+                            "protected": bool(item.get("protected", False)),
+                        }
+                    )
+        for project in self._reachable_projects(max_pages=max_pages):
+            project_id = project["id"]
+            repo = project["repo"]
+            path = f"/api/v4/projects/{project_id}/variables"
+            params = {"per_page": _PER_PAGE, "page": 1}
+            try:
+                pages = list(
+                    self._get_paginated(
+                        path,
+                        params=params,
+                        max_pages=max_pages,
+                        next_request=_gitlab_next(path, params),
+                    )
+                )
+            except SCMError:
+                continue
+            for resp in pages:
+                body = resp.json()
+                if not isinstance(body, list):
+                    continue
+                for item in body:
+                    key = item.get("key")
+                    if not key:
+                        continue
+                    results.append(
+                        {
+                            "scope": "repo",
+                            "owner": repo,
+                            "name": key,
+                            "protected": bool(item.get("protected", False)),
+                        }
+                    )
+        return results
+
     def validate_token(self) -> dict:
         user = self._get("/api/v4/user").json()
         username = user.get("username")

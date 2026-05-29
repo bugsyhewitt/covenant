@@ -363,6 +363,46 @@ class _GitHubHandler(BaseHTTPRequestHandler):
                     },
                 ],
             )
+        elif parsed.path.startswith("/orgs/") and parsed.path.endswith(
+            "/actions/secrets"
+        ):
+            # Org-level Actions secret-NAME enumeration
+            # (--enumerate-actions-secrets). The API returns names + metadata
+            # only — never the value. One org secret is restricted to selected
+            # repos (visibility=selected -> protected=true). GitHub wraps the
+            # list in a {"total_count", "secrets": [...]} envelope.
+            owner = parsed.path.split("/")[2]
+            self._json(
+                200,
+                {
+                    "total_count": 2,
+                    "secrets": [
+                        {"name": "ORG_AWS_KEY", "visibility": "all"},
+                        {
+                            "name": "ORG_NPM_TOKEN",
+                            "visibility": "selected",
+                            "selected_repositories_url": (
+                                f"https://api.github.com/orgs/{owner}"
+                                "/actions/secrets/ORG_NPM_TOKEN/repositories"
+                            ),
+                        },
+                    ],
+                },
+            )
+        elif parsed.path.startswith("/repos/") and parsed.path.endswith(
+            "/actions/secrets"
+        ):
+            # Repo-level Actions secret-NAME enumeration
+            # (--enumerate-actions-secrets). Names + metadata only; no value.
+            self._json(
+                200,
+                {
+                    "total_count": 1,
+                    "secrets": [
+                        {"name": "DEPLOY_TOKEN"},
+                    ],
+                },
+            )
         elif parsed.path == "/user/orgs":
             # Org/blast-radius enumeration (--enumerate-orgs). Supports the
             # MULTIPAGE_PREFIX is not relevant here (no query); serve a single
@@ -620,6 +660,46 @@ class _GitLabHandler(BaseHTTPRequestHandler):
                         "key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA deploy",
                         "fingerprint": "SHA256:deploykey301",
                         "can_push": True,
+                    },
+                ],
+                headers={"X-Page": "1", "X-Next-Page": "", "X-Total-Pages": "1"},
+            )
+        elif parsed.path.startswith("/api/v4/groups/") and parsed.path.endswith(
+            "/variables"
+        ):
+            # Group-level CI/CD variable-NAME enumeration
+            # (--enumerate-actions-secrets). GitLab returns each variable's
+            # `key` (name), `value` and `protected` flag; covenant emits the
+            # name + protected only, never the value. One group variable is
+            # protected.
+            self._json(
+                200,
+                [
+                    {
+                        "key": "GROUP_AWS_KEY",
+                        "value": "shouldnotappear",
+                        "protected": False,
+                    },
+                    {
+                        "key": "GROUP_NPM_TOKEN",
+                        "value": "shouldnotappear",
+                        "protected": True,
+                    },
+                ],
+                headers={"X-Page": "1", "X-Next-Page": "", "X-Total-Pages": "1"},
+            )
+        elif parsed.path.startswith("/api/v4/projects/") and parsed.path.endswith(
+            "/variables"
+        ):
+            # Project-level CI/CD variable-NAME enumeration
+            # (--enumerate-actions-secrets). Name + protected only; no value.
+            self._json(
+                200,
+                [
+                    {
+                        "key": "DEPLOY_TOKEN",
+                        "value": "shouldnotappear",
+                        "protected": False,
                     },
                 ],
                 headers={"X-Page": "1", "X-Next-Page": "", "X-Total-Pages": "1"},
@@ -902,6 +982,52 @@ class _BitbucketHandler(BaseHTTPRequestHandler):
                             "label": "ci-deploy",
                             "key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA deploy",
                             "comment": repo,
+                        },
+                    ],
+                    "size": 1,
+                },
+            )
+        elif parsed.path.startswith("/2.0/workspaces/") and parsed.path.endswith(
+            "/pipelines-config/variables"
+        ):
+            # Workspace-level Pipelines variable-NAME enumeration
+            # (--enumerate-actions-secrets). Bitbucket returns each variable's
+            # `key` and a `secured` flag; for a secured variable the API omits
+            # the `value` entirely. covenant emits name + protected only. One
+            # variable is secured (protected=true).
+            self._json(
+                200,
+                {
+                    "values": [
+                        {
+                            "uuid": "{var-1}",
+                            "key": "WS_AWS_KEY",
+                            "value": "shouldnotappear",
+                            "secured": False,
+                        },
+                        {
+                            "uuid": "{var-2}",
+                            "key": "WS_NPM_TOKEN",
+                            "secured": True,
+                        },
+                    ],
+                    "size": 2,
+                },
+            )
+        elif parsed.path.startswith("/2.0/repositories/") and parsed.path.endswith(
+            "/pipelines-config/variables"
+        ):
+            # Repo-level Pipelines variable-NAME enumeration
+            # (--enumerate-actions-secrets). Name + protected only; no value.
+            self._json(
+                200,
+                {
+                    "values": [
+                        {
+                            "uuid": "{var-3}",
+                            "key": "DEPLOY_TOKEN",
+                            "value": "shouldnotappear",
+                            "secured": False,
                         },
                     ],
                     "size": 1,

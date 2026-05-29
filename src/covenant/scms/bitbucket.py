@@ -456,6 +456,88 @@ class BitbucketClient(BaseSCMClient):
                     )
         return results
 
+    def enumerate_actions_secrets(
+        self, max_pages: int = DEFAULT_MAX_PAGES
+    ) -> list[dict]:
+        """List the Bitbucket Pipelines variable NAMES this token can reach.
+
+        Bitbucket Cloud's analogue of a GitHub Actions secret is the *Pipelines
+        variable*: the credentials and config a ``bitbucket-pipelines.yml`` build
+        runs with. They live at both the *workspace* level
+        (``GET /2.0/workspaces/{slug}/pipelines-config/variables``) and the
+        *repository* level
+        (``GET /2.0/repositories/{full_name}/pipelines-config/variables``). A repo
+        or workspace carrying a long list of variables is a high-value,
+        high-blast-radius target: an attacker who can read or exfiltrate them via
+        a malicious pipeline gains the pipeline's lateral-movement and
+        supply-chain reach.
+
+        We walk the workspaces from :meth:`enumerate_orgs` (``scope="org"``) and
+        the repos from :meth:`_reachable_repos` (``scope="repo"``), returning the
+        same normalized ``{"scope", "owner", "name", "protected"}`` shape as the
+        other SCMs. Bitbucket returns each variable's ``key`` (name) and a
+        ``secured`` flag; for a *secured* variable the API omits the ``value``
+        entirely. covenant surfaces ONLY the ``key`` as ``name`` (the
+        excessive-exposure signal) and maps ``secured`` to ``protected`` — the
+        variable ``value`` is never read into the output. Endpoints a token can't
+        read fail soft to an empty result. Read-only.
+        """
+        results: list[dict] = []
+        for workspace in self.enumerate_orgs(max_pages=max_pages):
+            owner = workspace.get("name")
+            if not owner:
+                continue
+            try:
+                pages = list(
+                    self._get_paginated(
+                        f"/2.0/workspaces/{owner}/pipelines-config/variables",
+                        params={"pagelen": 100},
+                        max_pages=max_pages,
+                        next_request=_bitbucket_next,
+                    )
+                )
+            except SCMError:
+                continue
+            for resp in pages:
+                for item in resp.json().get("values", []):
+                    key = item.get("key")
+                    if not key:
+                        continue
+                    results.append(
+                        {
+                            "scope": "org",
+                            "owner": owner,
+                            "name": key,
+                            "protected": bool(item.get("secured", False)),
+                        }
+                    )
+        for full_name in self._reachable_repos(max_pages=max_pages):
+            try:
+                pages = list(
+                    self._get_paginated(
+                        f"/2.0/repositories/{full_name}/pipelines-config/variables",
+                        params={"pagelen": 100},
+                        max_pages=max_pages,
+                        next_request=_bitbucket_next,
+                    )
+                )
+            except SCMError:
+                continue
+            for resp in pages:
+                for item in resp.json().get("values", []):
+                    key = item.get("key")
+                    if not key:
+                        continue
+                    results.append(
+                        {
+                            "scope": "repo",
+                            "owner": full_name,
+                            "name": key,
+                            "protected": bool(item.get("secured", False)),
+                        }
+                    )
+        return results
+
     def validate_token(self) -> dict:
         user = self._get("/2.0/user").json()
         username = user.get("username") or user.get("nickname")

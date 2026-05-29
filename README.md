@@ -751,6 +751,64 @@ Example `branch_protection` array (a weak and a strong branch):
 }
 ```
 
+### CI/CD secret enumeration (`--enumerate-actions-secrets`)
+
+Where `--enumerate-deploy-keys` maps the *keys* a token can reach and
+`--enumerate-webhooks` maps the exfiltration surface, **CI/CD secrets are the
+credential surface that powers the build pipeline**: cloud keys, registry
+passwords, signing tokens and deploy credentials all live here. An attacker who
+can read or — via a malicious workflow — exfiltrate them inherits exactly the
+lateral-movement and supply-chain reach the pipeline had, so a repo or org
+carrying a long list of secrets is a high-value, high-blast-radius target. Pass
+`--enumerate-actions-secrets` to `validate-token` and covenant walks both the
+org/group/workspace axis and the repo/project axis the token can reach with a
+**read-only** query, adding an `actions_secrets` array:
+
+| SCM       | Org-level (scope `org`)                                    | Repo-level (scope `repo`)                                          |
+|-----------|------------------------------------------------------------|--------------------------------------------------------------------|
+| GitHub    | `GET /orgs/{org}/actions/secrets`                          | `GET /repos/{owner}/{repo}/actions/secrets`                        |
+| GitLab    | `GET /api/v4/groups/{id}/variables`                        | `GET /api/v4/projects/{id}/variables`                              |
+| Bitbucket | `GET /2.0/workspaces/{slug}/pipelines-config/variables`    | `GET /2.0/repositories/{full_name}/pipelines-config/variables`     |
+
+Each entry is normalized to `{"scope", "owner", "name", "protected"}`.
+
+> **Only the secret NAME and metadata are surfaced — the secret VALUE is never
+> read or echoed.** The provider APIs deliberately omit the values of secured
+> secrets, and covenant emits names only. The NAME is the excessive-exposure
+> signal (e.g. an `AWS_*` or `NPM_TOKEN` name tells you the blast radius without
+> ever touching the credential).
+
+The `protected` field flags a tighter blast radius: for **GitHub** it is `true`
+when an org secret's `visibility` is restricted to selected repositories; for
+**GitLab** it maps the variable's `protected` flag; for **Bitbucket** it maps the
+variable's `secured` flag. Endpoints a low-privilege token can't read (CI/CD
+variables typically require Maintainer/admin) fail soft to an empty result so the
+audit still reports what it can see. The walk is bounded by the same `--max-pages`
+flag and honors the scope guardrail and automatic rate-limit retry/backoff. Like
+the other `--enumerate-*` flags the feature is purely additive (all may be
+combined): without the flag the output is unchanged, and with it the v0.1
+`scopes`/`user`/`admin` fields are untouched — only the `actions_secrets` array is
+added.
+
+```bash
+covenant github validate-token \
+  --scope-file scope.txt \
+  --enumerate-actions-secrets \
+  --token-env COVENANT_TOKEN
+```
+
+Example `actions_secrets` array (org-wide and repo-scoped secrets, names only):
+
+```json
+{
+  "actions_secrets": [
+    { "scope": "org",  "owner": "acme-corp",          "name": "ORG_AWS_KEY",   "protected": false },
+    { "scope": "org",  "owner": "acme-corp",          "name": "ORG_NPM_TOKEN", "protected": true  },
+    { "scope": "repo", "owner": "acme-corp/spellbook", "name": "DEPLOY_TOKEN",  "protected": false }
+  ]
+}
+```
+
 ## Usage — one example per SCM
 
 GitHub repo recon:
