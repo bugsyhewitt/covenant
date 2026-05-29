@@ -11,7 +11,10 @@ byte-for-byte identical, which is what the ephemeral-port smoke tests exercise.]
 
 from __future__ import annotations
 
+import json
+import re
 import time
+import tomllib
 from collections.abc import Callable
 
 import httpx
@@ -99,6 +102,307 @@ def parse_codeowners(text: str) -> dict:
         if pattern == "*":
             has_global_owner = True
     return {"rule_count": rule_count, "has_global_owner": has_global_owner}
+
+
+#: Repository-root-relative dependency-manifest filenames covenant inventories,
+#: each mapped to the package ecosystem it declares. This is the read-only
+#: dependency-audit surface (``--audit-packages``): covenant probes each repo's
+#: root for these files, parses the package names + declared versions, and
+#: reports them. It complements covenant's existing GitHub-security-configuration
+#: audits by mapping the *software supply-chain* surface — the third-party code a
+#: repo pulls in — which is where a known-vulnerable or typosquatted dependency
+#: would enter. The audit reads ONLY these manifest files (never lockfiles' full
+#: graphs, never source), and never resolves, installs, or modifies anything.
+#:
+#: Ordered so the parser is deterministic; the ecosystem label matches the value
+#: GitHub/GitLab dependency tooling uses (``npm``/``pip``/``go``/``rubygems``/
+#: ``maven``) so a ``--audit-packages`` inventory lines up with an
+#: ``--audit-dependabot-alerts`` finding's ``ecosystem`` field.
+PACKAGE_MANIFESTS: tuple[tuple[str, str], ...] = (
+    ("package.json", "npm"),
+    ("requirements.txt", "pip"),
+    ("pyproject.toml", "pip"),
+    ("Pipfile", "pip"),
+    ("go.mod", "go"),
+    ("Gemfile", "rubygems"),
+    ("pom.xml", "maven"),
+)
+
+
+def _packages_from_package_json(text: str) -> list[dict]:
+    """Extract {name, version} pairs from an npm ``package.json``.
+
+    Reads the ``dependencies``, ``devDependencies``, ``peerDependencies`` and
+    ``optionalDependencies`` maps (each ``{name: version-spec}``). The version
+    string is the declared spec verbatim (e.g. ``^1.2.3``) — covenant inventories
+    what the manifest *declares*, it does not resolve it. A malformed file yields
+    no packages rather than raising, so one bad manifest never aborts the audit.
+    """
+    try:
+        data = json.loads(text)
+    except (ValueError, TypeError):
+        return []
+    if not isinstance(data, dict):
+        return []
+    out: list[dict] = []
+    for section in (
+        "dependencies",
+        "devDependencies",
+        "peerDependencies",
+        "optionalDependencies",
+    ):
+        block = data.get(section)
+        if not isinstance(block, dict):
+            continue
+        for name, spec in block.items():
+            if isinstance(name, str) and name:
+                out.append(
+                    {"package": name, "version": spec if isinstance(spec, str) else None}
+                )
+    return out
+
+
+#: A requirements.txt requirement specifier, captured as name + (optional)
+#: version. Handles ``pkg==1.2.3``, ``pkg>=1.0``, ``pkg~=2.0``, bare ``pkg`` and
+#: extras (``pkg[extra]==1.0``). Environment markers (``; python_version<'3'``)
+#: and inline comments are stripped before matching.
+_REQ_LINE = re.compile(
+    r"^(?P<name>[A-Za-z0-9._-]+)\s*(?:\[[^\]]*\])?\s*"
+    r"(?P<op>==|>=|<=|~=|!=|>|<|===)?\s*(?P<version>[^\s;#]+)?"
+)
+
+
+def _packages_from_requirements_txt(text: str) -> list[dict]:
+    """Extract {name, version} pairs from a pip ``requirements.txt``.
+
+    Skips blank lines, comments, and the ``-r``/``-c``/``--option`` directives
+    (which reference other files or flags, not packages). The version is the
+    declared constraint value where an operator is present (the pin behind
+    ``==``, the bound behind ``>=``/``~=``/etc.), else ``None`` for a bare
+    requirement with no version. A line that does not parse as a requirement is
+    silently skipped.
+    """
+    out: list[dict] = []
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or line.startswith("-"):
+            continue
+        # Drop an inline comment and any environment marker before matching.
+        line = line.split("#", 1)[0].split(";", 1)[0].strip()
+        if not line:
+            continue
+        match = _REQ_LINE.match(line)
+        if not match:
+            continue
+        name = match.group("name")
+        if not name:
+            continue
+        version = match.group("version") if match.group("op") else None
+        out.append({"package": name, "version": version})
+    return out
+
+
+def _packages_from_pyproject_toml(text: str) -> list[dict]:
+    """Extract {name, version} pairs from a ``pyproject.toml``.
+
+    Reads PEP 621 ``[project].dependencies`` (a list of requirement strings) and,
+    when present, Poetry's ``[tool.poetry.dependencies]`` table (a
+    ``{name: spec}`` map). The ``python`` pseudo-dependency Poetry records is
+    skipped (it is the interpreter constraint, not a package). A file that is not
+    valid TOML yields no packages rather than raising.
+    """
+    try:
+        data = tomllib.loads(text)
+    except (tomllib.TOMLDecodeError, ValueError, TypeError):
+        return []
+    out: list[dict] = []
+    project = data.get("project")
+    if isinstance(project, dict):
+        for req in project.get("dependencies", []) or []:
+            if isinstance(req, str):
+                out.extend(_packages_from_requirements_txt(req))
+    poetry = (
+        data.get("tool", {}).get("poetry", {})
+        if isinstance(data.get("tool"), dict)
+        else {}
+    )
+    deps = poetry.get("dependencies") if isinstance(poetry, dict) else None
+    if isinstance(deps, dict):
+        for name, spec in deps.items():
+            if name == "python":
+                continue
+            if isinstance(spec, dict):
+                spec = spec.get("version")
+            out.append(
+                {"package": name, "version": spec if isinstance(spec, str) else None}
+            )
+    return out
+
+
+def _packages_from_pipfile(text: str) -> list[dict]:
+    """Extract {name, version} pairs from a ``Pipfile`` (TOML).
+
+    Reads the ``[packages]`` and ``[dev-packages]`` tables, each a
+    ``{name: spec}`` map where the spec is either a version string (``"*"`` for
+    "any") or a table (``{version = "==1.0"}``). A ``"*"`` spec is reported as
+    ``None`` (no pinned version). Invalid TOML yields no packages.
+    """
+    try:
+        data = tomllib.loads(text)
+    except (tomllib.TOMLDecodeError, ValueError, TypeError):
+        return []
+    out: list[dict] = []
+    for section in ("packages", "dev-packages"):
+        block = data.get(section)
+        if not isinstance(block, dict):
+            continue
+        for name, spec in block.items():
+            if isinstance(spec, dict):
+                spec = spec.get("version")
+            version = spec if isinstance(spec, str) and spec not in ("", "*") else None
+            out.append({"package": name, "version": version})
+    return out
+
+
+#: A ``go.mod`` ``require`` entry: ``<module-path> <version>``. The version is a
+#: semver tag or pseudo-version (``v1.2.3`` / ``v0.0.0-2024...-abcdef``).
+_GOMOD_REQUIRE = re.compile(r"^\s*(?P<name>[^\s]+)\s+(?P<version>v[^\s]+)")
+
+
+def _packages_from_go_mod(text: str) -> list[dict]:
+    """Extract {name, version} pairs from a Go ``go.mod``.
+
+    Handles both single-line ``require <path> <version>`` directives and the
+    block form (``require ( ... )``). The ``// indirect`` marker is ignored for
+    naming (the module is still a dependency the repo ships). The module path is
+    the package name and the semver/pseudo-version is the version.
+    """
+    out: list[dict] = []
+    in_block = False
+    for raw in text.splitlines():
+        line = raw.split("//", 1)[0].rstrip()
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if in_block:
+            if stripped == ")":
+                in_block = False
+                continue
+            match = _GOMOD_REQUIRE.match(line)
+            if match:
+                out.append(
+                    {"package": match.group("name"), "version": match.group("version")}
+                )
+            continue
+        if stripped.startswith("require"):
+            rest = stripped[len("require"):].strip()
+            if rest.startswith("("):
+                in_block = True
+                continue
+            match = _GOMOD_REQUIRE.match(rest)
+            if match:
+                out.append(
+                    {"package": match.group("name"), "version": match.group("version")}
+                )
+    return out
+
+
+#: A Bundler ``gem "name", "version"`` line. Captures the gem name and, when
+#: present, the first version constraint string. Comments and other DSL lines
+#: (``source``, ``group do``, ``ruby``) are ignored.
+_GEMFILE_GEM = re.compile(
+    r"""^\s*gem\s+['"](?P<name>[^'"]+)['"]"""
+    r"""(?:\s*,\s*['"](?P<version>[^'"]+)['"])?"""
+)
+
+
+def _packages_from_gemfile(text: str) -> list[dict]:
+    """Extract {name, version} pairs from a Bundler ``Gemfile``.
+
+    Matches ``gem "name"`` and ``gem "name", "~> 1.2"`` declarations; the version
+    is the first constraint string when one is given, else ``None``. Non-gem DSL
+    lines and comments are skipped. Only the gem NAME and declared constraint are
+    surfaced.
+    """
+    out: list[dict] = []
+    for raw in text.splitlines():
+        line = raw.split("#", 1)[0]
+        match = _GEMFILE_GEM.match(line)
+        if match:
+            out.append(
+                {"package": match.group("name"), "version": match.group("version")}
+            )
+    return out
+
+
+#: A Maven ``pom.xml`` ``<dependency>`` block's groupId/artifactId/version. We
+#: parse with regex rather than a full XML library to keep the audit dependency-
+#: free and resilient to namespaces; the dependency block is well-structured
+#: enough that a non-greedy scan is reliable for inventory purposes.
+_POM_DEPENDENCY = re.compile(
+    r"<dependency>(?P<body>.*?)</dependency>", re.DOTALL | re.IGNORECASE
+)
+_POM_GROUP = re.compile(r"<groupId>\s*(?P<v>[^<]+?)\s*</groupId>", re.IGNORECASE)
+_POM_ARTIFACT = re.compile(r"<artifactId>\s*(?P<v>[^<]+?)\s*</artifactId>", re.IGNORECASE)
+_POM_VERSION = re.compile(r"<version>\s*(?P<v>[^<]+?)\s*</version>", re.IGNORECASE)
+
+
+def _packages_from_pom_xml(text: str) -> list[dict]:
+    """Extract {name, version} pairs from a Maven ``pom.xml``.
+
+    Each ``<dependency>`` block contributes one package named
+    ``groupId:artifactId`` (the Maven coordinate convention) with its declared
+    ``<version>`` (or ``None`` when the version is inherited / managed elsewhere).
+    Blocks missing an artifactId are skipped. A malformed document yields only
+    the blocks that do parse.
+    """
+    out: list[dict] = []
+    for block in _POM_DEPENDENCY.finditer(text):
+        body = block.group("body")
+        artifact_match = _POM_ARTIFACT.search(body)
+        if not artifact_match:
+            continue
+        artifact = artifact_match.group("v").strip()
+        group_match = _POM_GROUP.search(body)
+        group = group_match.group("v").strip() if group_match else None
+        name = f"{group}:{artifact}" if group else artifact
+        version_match = _POM_VERSION.search(body)
+        version = version_match.group("v").strip() if version_match else None
+        out.append({"package": name, "version": version})
+    return out
+
+
+#: Manifest filename -> the pure parser that turns its body into a list of
+#: ``{"package", "version"}`` dicts. Used by :func:`parse_manifest`.
+_MANIFEST_PARSERS = {
+    "package.json": _packages_from_package_json,
+    "requirements.txt": _packages_from_requirements_txt,
+    "pyproject.toml": _packages_from_pyproject_toml,
+    "Pipfile": _packages_from_pipfile,
+    "go.mod": _packages_from_go_mod,
+    "Gemfile": _packages_from_gemfile,
+    "pom.xml": _packages_from_pom_xml,
+}
+
+
+def parse_manifest(filename: str, text: str) -> list[dict]:
+    """Parse a dependency-manifest body into a list of ``{package, version}`` dicts.
+
+    Dispatches on ``filename`` (one of :data:`PACKAGE_MANIFESTS`' keys) to the
+    matching ecosystem parser. The ``version`` is the spec the manifest
+    *declares* (``^1.2.3``, ``==1.0``, ``v1.4.0``, ...) — covenant inventories
+    the declaration, it never resolves or installs it — and is ``None`` when the
+    manifest pins no version for that package. An unknown filename or an
+    unparseable body returns ``[]`` rather than raising, so one bad manifest can
+    never abort an audit. The function is pure (no network, no SCM state) so it is
+    unit-testable in isolation, and surfaces ONLY package names + declared
+    versions — never file contents, source, or any credential a manifest might
+    inadvisedly contain.
+    """
+    parser = _MANIFEST_PARSERS.get(filename)
+    if parser is None:
+        return []
+    return parser(text)
 
 
 def _parse_retry_after(resp: httpx.Response, attempt: int) -> float:

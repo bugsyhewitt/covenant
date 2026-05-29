@@ -475,6 +475,61 @@ def _build_parser() -> argparse.ArgumentParser:
             ),
         )
         token.add_argument(
+            "--audit-packages",
+            action="store_true",
+            default=False,
+            dest="audit_packages",
+            help=(
+                "additionally inventory the declared package dependencies of the "
+                "repos this token can reach by reading their manifest files "
+                "(package.json, requirements.txt, pyproject.toml, Pipfile, "
+                "go.mod, Gemfile, pom.xml) via a read-only file fetch; adds a "
+                "'packages' array of {repo, manifest, ecosystem, package, version} "
+                "entries. Where --audit-dependabot-alerts reports the KNOWN-"
+                "VULNERABLE dependencies a provider scanner has already flagged, "
+                "this reports the FULL declared dependency surface — the software-"
+                "supply-chain inventory an operator needs before asking which of "
+                "those packages is vulnerable, typosquatted, or abandoned, and the "
+                "surface a Dependabot audit can only annotate, not enumerate. "
+                "'version' is the spec the manifest DECLARES (e.g. ^1.2.3) — "
+                "covenant inventories the declaration, it never resolves or "
+                "installs anything — and is null when unpinned. Unlike "
+                "--audit-dependabot-alerts (a no-op on Bitbucket Cloud), this "
+                "works on all three SCMs because it reads manifests directly. "
+                "Only the named manifest files are read (never lockfile graphs, "
+                "never source) and only package names + declared versions are "
+                "surfaced. Read-only; never resolves, installs, or modifies a "
+                "dependency."
+            ),
+        )
+        token.add_argument(
+            "--audit-secret-scanning",
+            action="store_true",
+            default=False,
+            dest="audit_secret_scanning",
+            help=(
+                "additionally audit the OPEN secret-scanning alerts on the repos "
+                "this token can reach (GitHub secret-scanning alerts, GitLab "
+                "secret-detection findings) via a read-only query; adds a "
+                "'secret_scanning' array of {repo, secret_type, state, validity, "
+                "html_url} entries. The highest-signal surface of all: each alert "
+                "is a credential the PROVIDER'S OWN scanner has ALREADY detected "
+                "committed in the repo — a live leak the org has not yet "
+                "remediated, exactly what --scan-secrets/--scan-commits hunt for "
+                "except already found and confirmed. 'validity' (active/inactive/"
+                "unknown) flags whether the leaked credential is believed to still "
+                "authenticate. CRITICAL: the raw secret VALUE is never surfaced — "
+                "only the secret_type classifier, state, validity, and the alert "
+                "URL — so the report is not itself a new copy of the leak. Only "
+                "OPEN alerts are requested; a repo with the feature disabled or a "
+                "token without the security-events scope is skipped (403/404) "
+                "rather than failing the whole audit. Bitbucket Cloud has no "
+                "first-party secret-scanning-alert API, so the result is empty "
+                "there with an explanatory warning. Read-only; never resolves, "
+                "dismisses, or reopens an alert."
+            ),
+        )
+        token.add_argument(
             "--enumerate-members",
             action="store_true",
             default=False,
@@ -568,7 +623,8 @@ def _build_parser() -> argparse.ArgumentParser:
             help=(
                 f"maximum org/group/workspace/key/gist/webhook/deploy-key/"
                 f"branch-protection/actions-secret/repo-visibility/codeowners/"
-                f"dependabot-alert/member/collaborator/commit pages to walk when "
+                f"dependabot-alert/package/secret-scanning/member/collaborator/"
+                f"commit pages to walk when "
                 f"an --enumerate-*, "
                 f"--audit-*, or --scan-commits flag is set (default: "
                 f"{DEFAULT_MAX_PAGES}, hard ceiling: {HARD_MAX_PAGES})."
@@ -841,6 +897,31 @@ def main(argv: list[str] | None = None) -> int:
                 payload["dependabot_alerts"] = client.audit_dependabot_alerts(
                     max_pages=max_pages
                 )
+            # Optional package-dependency inventory. Read-only, additive: the
+            # v0.1 validate-token fields are untouched and the 'packages' array
+            # only appears when --audit-packages is requested. Reads each
+            # reachable repo's manifest files and reports the FULL declared
+            # dependency surface (the software-supply-chain inventory), the
+            # complement to --audit-dependabot-alerts (which only annotates the
+            # KNOWN-vulnerable subset). Only package names + declared versions are
+            # surfaced — never lockfile graphs, source, or any credential.
+            if getattr(args, "audit_packages", False):
+                payload["packages"] = client.audit_packages(
+                    max_pages=max_pages
+                )
+            # Optional secret-scanning audit. Read-only, additive: the v0.1
+            # validate-token fields are untouched and the 'secret_scanning' array
+            # only appears when --audit-secret-scanning is requested. Reports the
+            # highest-signal surface: credentials the PROVIDER'S OWN scanner has
+            # already detected committed in the reachable repos (live, confirmed
+            # leaks). A repo with the feature disabled or out of the token's scope
+            # is skipped. CRITICAL: only the secret_type classifier, state,
+            # validity, and alert URL are surfaced — never the raw secret value,
+            # so the report is not itself a copy of the leak.
+            if getattr(args, "audit_secret_scanning", False):
+                payload["secret_scanning"] = client.audit_secret_scanning(
+                    max_pages=max_pages
+                )
             # Optional org/group/workspace member enumeration. Read-only,
             # additive: the v0.1 validate-token fields are untouched and the
             # 'members' array only appears when --enumerate-members is
@@ -924,6 +1005,8 @@ def main(argv: list[str] | None = None) -> int:
                 or getattr(args, "audit_repo_visibility", False)
                 or getattr(args, "audit_codeowners", False)
                 or getattr(args, "audit_dependabot_alerts", False)
+                or getattr(args, "audit_packages", False)
+                or getattr(args, "audit_secret_scanning", False)
                 or getattr(args, "enumerate_members", False)
                 or getattr(args, "enumerate_collaborators", False)
                 or getattr(args, "scan_commits", False)
