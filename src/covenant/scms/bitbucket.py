@@ -7,10 +7,12 @@ import httpx
 from ..tokens import classify_token
 from .base import (
     DEFAULT_MAX_PAGES,
+    PACKAGE_MANIFESTS,
     BaseSCMClient,
     SCMError,
     codeowners_candidate_paths,
     parse_codeowners,
+    parse_manifest,
 )
 
 
@@ -695,6 +697,50 @@ class BitbucketClient(BaseSCMClient):
             results.append(record)
         return results
 
+    def audit_packages(self, max_pages: int = DEFAULT_MAX_PAGES) -> list[dict]:
+        """Inventory the declared package dependencies of reachable repos.
+
+        Where ``--audit-dependabot-alerts`` is a no-op on Bitbucket Cloud (it has
+        no first-party dependency-alert API), this audit DOES work there: it reads
+        the dependency surface straight from the manifest files in the repo, so a
+        Bitbucket-only engagement still gets a full declared-dependency inventory —
+        the software-supply-chain map an operator needs before triaging which
+        package is vulnerable, typosquatted, or abandoned.
+
+        Walks the repositories the token can reach
+        (``GET /2.0/repositories?role=member``) and, for each, probes the repo
+        root for the supported manifest files (``package.json``,
+        ``requirements.txt``, ``pyproject.toml``, ``Pipfile``, ``go.mod``,
+        ``Gemfile``, ``pom.xml``) via the source API
+        (``GET /2.0/repositories/{full_name}/src/HEAD/{manifest}``, which returns
+        the file's RAW text on the main branch's tip). Each declared package
+        becomes one normalized
+        ``{"repo", "manifest", "ecosystem", "package", "version"}`` dict, the same
+        cross-provider shape as the other SCMs. ``version`` is the spec the manifest
+        declares (never resolved) and is ``null`` when unpinned. A repo with no
+        recognized manifest contributes no rows. Read-only — only the named manifest
+        files are read and only package names + declared versions are surfaced.
+        """
+        results: list[dict] = []
+        for full_name in self._reachable_repos(max_pages=max_pages):
+            for manifest, ecosystem in PACKAGE_MANIFESTS:
+                text = self._fetch_file_content(
+                    f"/2.0/repositories/{full_name}/src/HEAD/{manifest}"
+                )
+                if text is None:
+                    continue
+                for pkg in parse_manifest(manifest, text):
+                    results.append(
+                        {
+                            "repo": full_name,
+                            "manifest": manifest,
+                            "ecosystem": ecosystem,
+                            "package": pkg["package"],
+                            "version": pkg["version"],
+                        }
+                    )
+        return results
+
     def _fetch_file_content(self, path: str) -> str | None:
         """GET a repo file's RAW text, or ``None`` if it does not exist.
 
@@ -737,6 +783,32 @@ class BitbucketClient(BaseSCMClient):
             "dependabot-alerts audit is unsupported on Bitbucket Cloud "
             "(no first-party dependency-alert API); result is empty by design, "
             "not a clean bill of health"
+        )
+        return []
+
+    def audit_secret_scanning(
+        self, max_pages: int = DEFAULT_MAX_PAGES
+    ) -> list[dict]:
+        """No-op on Bitbucket Cloud, which has no secret-scanning-alert API.
+
+        GitHub's secret-scanning alerts and GitLab's secret-detection findings
+        both expose, over a read-only REST endpoint, the credentials the
+        platform's own scanner has already detected committed in a repo.
+        Bitbucket Cloud has no equivalent first-party surface: secret detection
+        on Bitbucket is delivered through third-party Pipelines integrations
+        rather than a token-readable ``alerts`` endpoint, so there is nothing for
+        covenant to enumerate here.
+
+        To keep the cross-provider audit uniform, the method exists and returns
+        an empty list (the same normalized shape as the other SCMs would yield,
+        just with no entries) and records a single non-fatal ``warnings`` note so
+        the operator understands the empty result reflects a platform limitation,
+        not a clean bill of health. Read-only — it makes no request at all.
+        """
+        self.warnings.append(
+            "secret-scanning audit is unsupported on Bitbucket Cloud "
+            "(no first-party secret-scanning-alert API); result is empty by "
+            "design, not a clean bill of health"
         )
         return []
 

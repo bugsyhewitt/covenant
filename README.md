@@ -984,6 +984,78 @@ feature disabled is silently skipped, not listed):
 }
 ```
 
+### Package-dependency inventory (`--audit-packages`)
+
+Where `--audit-dependabot-alerts` reports the **known-vulnerable** subset a
+provider scanner has *already flagged*, this reports the **full declared
+dependency surface**: every package a reachable repo's manifest files pull in,
+named with its declared version and ecosystem. It is the software-supply-chain
+**inventory** an operator needs *before* asking "which of these is vulnerable,
+typosquatted, or abandoned?" — the surface a Dependabot audit can only annotate,
+not enumerate. And unlike `--audit-dependabot-alerts` (a no-op on Bitbucket
+Cloud), this works on **all three SCMs**, because it reads the manifests
+directly rather than relying on a first-party alert API.
+
+Pass `--audit-packages` to `validate-token` and covenant walks the repos the
+token can reach, probing each one's repository root for the supported manifest
+files with a **read-only** file fetch and parsing the declared dependencies:
+
+| SCM       | Endpoint                                                        | Body returned            |
+|-----------|-----------------------------------------------------------------|--------------------------|
+| GitHub    | `GET /repos/{owner}/{repo}/contents/{manifest}`                 | base64 JSON envelope     |
+| GitLab    | `GET /api/v4/projects/{id}/repository/files/{manifest}?ref=…`   | base64 JSON envelope     |
+| Bitbucket | `GET /2.0/repositories/{full_name}/src/HEAD/{manifest}`         | raw file text            |
+
+The manifest files probed (and the ecosystem each declares):
+
+| Manifest            | Ecosystem  | Source read                                           |
+|---------------------|------------|-------------------------------------------------------|
+| `package.json`      | `npm`      | `dependencies` + `devDependencies` + `peerDependencies` + `optionalDependencies` |
+| `requirements.txt`  | `pip`      | requirement specifiers (`-r`/`-c`/`--option` directives skipped) |
+| `pyproject.toml`    | `pip`      | PEP 621 `[project].dependencies` + Poetry `[tool.poetry.dependencies]` |
+| `Pipfile`           | `pip`      | `[packages]` + `[dev-packages]`                       |
+| `go.mod`            | `go`       | `require` directives (single-line and block form)     |
+| `Gemfile`           | `rubygems` | `gem "name", "constraint"` declarations               |
+| `pom.xml`           | `maven`    | each `<dependency>` block as `groupId:artifactId`     |
+
+Each declared package is normalized to
+`{"repo", "manifest", "ecosystem", "package", "version"}`. `version` is the spec
+the manifest **declares** (`^1.2.3`, `==1.0`, `v1.4.0`, …) and is `null` when no
+version is pinned for that package.
+
+> **covenant inventories the declaration — it never resolves or installs it.**
+> The `version` is exactly what the manifest says, not a resolved lockfile pin.
+> Only the named manifest files are read (never lockfile graphs, never source),
+> and only package names + declared versions are surfaced — never any credential
+> a manifest might inadvisedly contain. A repo with no recognized manifest
+> contributes no rows; a malformed manifest contributes no rows for that file
+> rather than aborting the audit.
+
+The walk is bounded by the same `--max-pages` flag and honors the scope
+guardrail and automatic rate-limit retry/backoff. Like the other
+`--enumerate-*`/`--audit-*` flags the feature is purely additive (all may be
+combined): without the flag the output is unchanged, and with it the v0.1
+`scopes`/`user`/`admin` fields are untouched — only the `packages` array is
+added.
+
+```bash
+covenant github validate-token \
+  --scope-file scope.txt \
+  --audit-packages \
+  --token-env COVENANT_TOKEN
+```
+
+Example `packages` array (npm + pip dependencies declared by one repo):
+
+```json
+{
+  "packages": [
+    { "repo": "acme-corp/spellbook", "manifest": "package.json", "ecosystem": "npm", "package": "left-pad", "version": "^1.3.0" },
+    { "repo": "acme-corp/spellbook", "manifest": "requirements.txt", "ecosystem": "pip", "package": "requests", "version": "2.31.0" }
+  ]
+}
+```
+
 ### Deployment-environment audit (`--audit-actions-environments`)
 
 A deployment **environment** (GitHub Actions "Environments", GitLab project

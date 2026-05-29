@@ -9,10 +9,12 @@ import httpx
 from ..tokens import classify_token
 from .base import (
     DEFAULT_MAX_PAGES,
+    PACKAGE_MANIFESTS,
     BaseSCMClient,
     SCMError,
     codeowners_candidate_paths,
     parse_codeowners,
+    parse_manifest,
 )
 
 #: GitLab offset pagination page size — the API cap is 100 per page.
@@ -933,6 +935,57 @@ class GitLabClient(BaseSCMClient):
             results.append(record)
         return results
 
+    def audit_packages(self, max_pages: int = DEFAULT_MAX_PAGES) -> list[dict]:
+        """Inventory the declared package dependencies of reachable projects.
+
+        Where ``--audit-dependabot-alerts`` reports KNOWN-vulnerable dependencies
+        (GitLab dependency-scanning findings), this reports the FULL declared
+        dependency surface: every package a reachable project's manifest files
+        pull in, named with its declared version and ecosystem. It is the
+        software-supply-chain complement to covenant's security-configuration
+        audits — the inventory needed before triaging which dependency is
+        vulnerable, typosquatted, or abandoned.
+
+        Walks the projects the token is a member of
+        (``GET /api/v4/projects?membership=true``) and, for each, probes the repo
+        root for the supported manifest files (``package.json``,
+        ``requirements.txt``, ``pyproject.toml``, ``Pipfile``, ``go.mod``,
+        ``Gemfile``, ``pom.xml``) via the repository-files API
+        (``GET /api/v4/projects/{id}/repository/files/{path}?ref={branch}``) on
+        the project's default branch. Each declared package becomes one normalized
+        ``{"repo", "manifest", "ecosystem", "package", "version"}`` dict, the same
+        cross-provider shape as the other SCMs. ``version`` is the spec the
+        manifest declares (never resolved) and is ``null`` when unpinned. A project
+        with no recognized manifest contributes no rows. Read-only — only the named
+        manifest files are read and only package names + declared versions are
+        surfaced.
+        """
+        results: list[dict] = []
+        for project in self._reachable_projects(max_pages=max_pages):
+            project_id = project["id"]
+            repo = project["repo"]
+            ref = project.get("default_branch") or "main"
+            for manifest, ecosystem in PACKAGE_MANIFESTS:
+                encoded_path = quote(manifest, safe="")
+                api_path = (
+                    f"/api/v4/projects/{project_id}/repository/files/"
+                    f"{encoded_path}"
+                )
+                text = self._fetch_file_content(api_path, ref)
+                if text is None:
+                    continue
+                for pkg in parse_manifest(manifest, text):
+                    results.append(
+                        {
+                            "repo": repo,
+                            "manifest": manifest,
+                            "ecosystem": ecosystem,
+                            "package": pkg["package"],
+                            "version": pkg["version"],
+                        }
+                    )
+        return results
+
     def _fetch_file_content(self, api_path: str, ref: str) -> str | None:
         """GET a project file's decoded text, or ``None`` if it does not exist.
 
@@ -1031,6 +1084,91 @@ class GitLabClient(BaseSCMClient):
                             "severity": severity,
                             "state": item.get("state", "detected"),
                             "identifier": identifier,
+                        }
+                    )
+        return results
+
+    def audit_secret_scanning(
+        self, max_pages: int = DEFAULT_MAX_PAGES
+    ) -> list[dict]:
+        """Audit the OPEN secret-detection findings on reachable projects.
+
+        GitLab has no "secret-scanning alerts" endpoint of its own; its analogue
+        is the Vulnerability Report fed by *secret detection* — the same report
+        that ``--audit-dependabot-alerts`` reads for dependency findings, here
+        filtered to ``report_type=secret_detection``. Each such finding is a
+        credential GitLab's scanner detected committed in the project, the same
+        already-confirmed-leak signal as GitHub's secret-scanning alerts, so
+        covenant surfaces it under the identical flag and normalized shape for a
+        uniform cross-provider audit.
+
+        Walks the projects the token is a member of
+        (``GET /api/v4/projects?membership=true``) and, for each, lists its
+        DETECTED secret-detection vulnerabilities
+        (``GET /api/v4/projects/{id}/vulnerabilities?report_type=secret_detection&state=detected``),
+        returning a normalized list of
+        ``{"repo", "secret_type", "state", "validity", "html_url"}`` dicts.
+        ``secret_type`` is the finding's classifier (its title, e.g. "AWS Access
+        Key") — the KIND of secret, never its value. ``validity`` is ``"unknown"``
+        (GitLab does not expose a credential-freshness signal, so the field is
+        carried for cross-provider shape parity rather than populated with a
+        guess). ``html_url`` is the finding's web link, not the secret.
+
+        **The decisive invariant**: the raw leaked secret is NEVER surfaced.
+        GitLab's vulnerability object can carry the matched credential in its
+        ``finding``/``raw_metadata`` payload; covenant reads neither — only the
+        classifier, state, and the finding URL. Only OPEN (``detected``) findings
+        are requested. A project without the security feature (or a token lacking
+        access) answers 403/404 for that project; covenant skips it rather than
+        failing the whole audit. Read-only — it only GETs finding metadata and
+        never confirms, dismisses, or resolves a vulnerability.
+        """
+        results: list[dict] = []
+        for project in self._reachable_projects(max_pages=max_pages):
+            project_id = project["id"]
+            repo = project["repo"]
+            path = f"/api/v4/projects/{project_id}/vulnerabilities"
+            params = {
+                "report_type": "secret_detection",
+                "state": "detected",
+                "per_page": _PER_PAGE,
+                "page": 1,
+            }
+            url = f"{self.base_url}{path}"
+            probe = self._request_with_retry(url, params, self._headers())
+            # No security feature / no access for this project — skip it, do not
+            # abort the whole audit.
+            if probe.status_code in (403, 404):
+                continue
+            if probe.status_code == 401:
+                raise SCMError("authentication failed (401) — check the token")
+            if probe.status_code >= 400:
+                raise SCMError(
+                    f"{self.base_url} returned HTTP {probe.status_code} "
+                    f"for {repo} secret-detection findings"
+                )
+            for resp in self._get_paginated(
+                path,
+                params=params,
+                max_pages=max_pages,
+                next_request=_gitlab_next(path, params),
+            ):
+                body = resp.json()
+                if not isinstance(body, list):
+                    continue
+                for item in body:
+                    finding = item.get("finding") or {}
+                    # NEVER read finding["raw_metadata"] / any matched-credential
+                    # field — only the classifier (title/name), state, and URL.
+                    results.append(
+                        {
+                            "repo": repo,
+                            "secret_type": item.get("title")
+                            or finding.get("name"),
+                            "state": item.get("state", "detected"),
+                            "validity": "unknown",
+                            "html_url": item.get("web_url")
+                            or finding.get("web_url"),
                         }
                     )
         return results

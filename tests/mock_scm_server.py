@@ -606,6 +606,40 @@ class _GitHubHandler(BaseHTTPRequestHandler):
             else:
                 # grimoire: Dependabot disabled / token lacks security_events.
                 self._json(403, {"message": "Dependabot alerts are disabled"})
+        elif parsed.path.startswith("/repos/") and parsed.path.endswith(
+            "/secret-scanning/alerts"
+        ):
+            # Secret-scanning audit (--audit-secret-scanning). The spellbook repo
+            # has one OPEN alert for a leaked AWS key whose validity is ACTIVE
+            # (the high-signal still-live-credential case); the grimoire repo has
+            # secret scanning DISABLED, which GitHub answers with 403 — covenant
+            # must SKIP that repo, not fail the whole audit. The API response
+            # carries the raw matched credential in `secret` and a decorated name
+            # in `secret_type_display_name`; covenant must read NEITHER — only the
+            # secret_type classifier, state, validity, and html_url.
+            repo = "/".join(parsed.path.split("/")[2:4])
+            if repo.endswith("/spellbook"):
+                self._json(
+                    200,
+                    [
+                        {
+                            "number": 7,
+                            "state": "open",
+                            "secret_type": "aws_access_key_id",
+                            "secret_type_display_name": "Amazon AWS Access Key ID",
+                            # The raw leaked credential — covenant must NEVER echo it.
+                            "secret": "AKIAIOSFODNN7EXAMPLE",
+                            "validity": "active",
+                            "html_url": (
+                                "https://github.com/acme-corp/spellbook/"
+                                "security/secret-scanning/7"
+                            ),
+                        },
+                    ],
+                )
+            else:
+                # grimoire: secret scanning disabled / token lacks security_events.
+                self._json(403, {"message": "Secret scanning is disabled"})
         elif parsed.path.startswith("/repos/") and "/contents/" in parsed.path:
             # CODEOWNERS-coverage audit (--audit-codeowners). GitHub serves file
             # content as a JSON object with base64-encoded `content`. covenant
@@ -630,18 +664,34 @@ class _GitHubHandler(BaseHTTPRequestHandler):
                 "* @org/maintainers\n"
                 "src/ @org/backend\n"
             )
+            # Package-dependency inventory (--audit-packages). The spellbook repo
+            # ships a package.json (npm) and a requirements.txt (pip); the
+            # grimoire repo has no recognized manifest. covenant probes each
+            # manifest filename in PACKAGE_MANIFESTS order and parses every hit.
+            spellbook_package_json = json.dumps(
+                {
+                    "name": "spellbook",
+                    "dependencies": {"left-pad": "^1.3.0", "lodash": "4.17.21"},
+                    "devDependencies": {"jest": "^29.0.0"},
+                }
+            )
+            spellbook_requirements = "requests==2.31.0\nflask>=2.0\n# a comment\n"
             content = None
             if repo.endswith("/spellbook") and file_path == ".github/CODEOWNERS":
                 content = spellbook_body
             elif repo.endswith("/grimoire") and file_path == "CODEOWNERS":
                 content = grimoire_body
+            elif repo.endswith("/spellbook") and file_path == "package.json":
+                content = spellbook_package_json
+            elif repo.endswith("/spellbook") and file_path == "requirements.txt":
+                content = spellbook_requirements
             if content is None:
                 self._json(404, {"message": "Not Found"})
             else:
                 self._json(
                     200,
                     {
-                        "name": "CODEOWNERS",
+                        "name": file_path.rsplit("/", 1)[-1],
                         "path": file_path,
                         "encoding": "base64",
                         "content": _b64.b64encode(content.encode()).decode(),
@@ -1038,6 +1088,46 @@ class _GitLabHandler(BaseHTTPRequestHandler):
         elif parsed.path.startswith("/api/v4/projects/") and parsed.path.endswith(
             "/vulnerabilities"
         ):
+            # The vulnerabilities endpoint backs two audits, distinguished by the
+            # report_type query param:
+            #   * no/dependency_scanning filter -> --audit-dependabot-alerts
+            #   * report_type=secret_detection   -> --audit-secret-scanning
+            report_type = params.get("report_type", [None])[0]
+            if report_type == "secret_detection":
+                # Secret-detection audit (--audit-secret-scanning). GitLab's
+                # analogue of a GitHub secret-scanning alert is a detected
+                # secret_detection vulnerability. The mock project has one OPEN
+                # (detected) finding for a leaked AWS key. The finding object can
+                # carry the raw matched credential in raw_metadata; covenant must
+                # read NEITHER it nor any secret value — only the title
+                # classifier, state, and web_url.
+                self._json(
+                    200,
+                    [
+                        {
+                            "id": 9100,
+                            "title": "AWS Access Key",
+                            "severity": "Critical",
+                            "state": "detected",
+                            "report_type": "secret_detection",
+                            "web_url": (
+                                "https://gitlab.com/acme/spell-book-1/-/"
+                                "security/vulnerabilities/9100"
+                            ),
+                            "finding": {
+                                "name": "AWS Access Key",
+                                # Raw matched credential — covenant must NEVER echo it.
+                                "raw_metadata": "AKIAIOSFODNN7EXAMPLE",
+                            },
+                        },
+                    ],
+                    headers={
+                        "X-Page": "1",
+                        "X-Next-Page": "",
+                        "X-Total-Pages": "1",
+                    },
+                )
+                return
             # Dependency-vulnerability audit (--audit-dependabot-alerts).
             # GitLab's analogue of a Dependabot alert is a detected
             # vulnerability from dependency scanning. The mock project has one
@@ -1081,14 +1171,30 @@ class _GitLabHandler(BaseHTTPRequestHandler):
                 "src/ @backend\n"
                 "docs/ @docs-team\n"
             )  # no '*' rule on purpose
+            # Package-dependency inventory (--audit-packages). The mock project
+            # ships a go.mod (go) manifest at the repo root; other manifest probes
+            # 404. covenant parses the module + version rows.
+            go_mod_body = (
+                "module example.com/spell-book\n\n"
+                "go 1.22\n\n"
+                "require (\n"
+                "\tgithub.com/pkg/errors v0.9.1\n"
+                "\tgolang.org/x/sync v0.7.0 // indirect\n"
+                ")\n"
+            )
+            served = None
             if file_path == ".gitlab/CODEOWNERS":
+                served = body
+            elif file_path == "go.mod":
+                served = go_mod_body
+            if served is not None:
                 self._json(
                     200,
                     {
                         "file_path": file_path,
                         "ref": params.get("ref", ["main"])[0],
                         "encoding": "base64",
-                        "content": _b64.b64encode(body.encode()).decode(),
+                        "content": _b64.b64encode(served.encode()).decode(),
                     },
                     headers={"X-Page": "1", "X-Next-Page": "", "X-Total-Pages": "1"},
                 )
@@ -1536,13 +1642,26 @@ class _BitbucketHandler(BaseHTTPRequestHandler):
             # branch. The mock's single repo has a PARTIAL CODEOWNERS (rules but
             # no catch-all '*' — the high-signal coverage gap) at the root; other
             # paths 404 (absent).
+            # Package-dependency inventory (--audit-packages). The mock repo ships
+            # a Gemfile (rubygems) manifest at the root; other manifest probes
+            # 404. covenant parses the gem + version rows. Bitbucket has no
+            # dependency-alert API, so --audit-packages is the only dependency
+            # surface that works there.
             file_path = parsed.path.split("/src/HEAD/", 1)[1]
+            raw = None
             if file_path == "CODEOWNERS":
                 raw = (
                     b"# ownership\n"
                     b"src/ @backend\n"
                     b"docs/ @docs-team\n"
                 )  # no '*' rule on purpose
+            elif file_path == "Gemfile":
+                raw = (
+                    b"source 'https://rubygems.org'\n"
+                    b"gem 'rails', '~> 7.0'\n"
+                    b"gem 'puma'\n"
+                )
+            if raw is not None:
                 self.send_response(200)
                 self.send_header("Content-Type", "text/plain")
                 self.send_header("Content-Length", str(len(raw)))

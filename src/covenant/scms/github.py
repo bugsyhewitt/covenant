@@ -9,10 +9,12 @@ import base64
 from ..tokens import classify_token
 from .base import (
     DEFAULT_MAX_PAGES,
+    PACKAGE_MANIFESTS,
     BaseSCMClient,
     SCMError,
     codeowners_candidate_paths,
     parse_codeowners,
+    parse_manifest,
 )
 
 # GitHub's text-match Accept header requests snippet fragments alongside code
@@ -812,6 +814,52 @@ class GitHubClient(BaseSCMClient):
                 return ""
         return ""
 
+    def audit_packages(self, max_pages: int = DEFAULT_MAX_PAGES) -> list[dict]:
+        """Inventory the declared package dependencies of reachable repos.
+
+        Where ``--audit-dependabot-alerts`` reports KNOWN-vulnerable dependencies
+        (those a provider scanner has already flagged), this reports the FULL
+        declared dependency surface: every package a reachable repo's manifest
+        files pull in, named with its declared version and ecosystem. It is the
+        software-supply-chain complement to covenant's security-configuration
+        audits — the inventory an operator needs before asking "which of these is
+        vulnerable / typosquatted / abandoned?", and the surface a Dependabot
+        audit can only annotate, not enumerate.
+
+        Walks the repositories the token can reach (``GET /user/repos``) and, for
+        each, probes the repo root for the supported manifest files
+        (``package.json``, ``requirements.txt``, ``pyproject.toml``, ``Pipfile``,
+        ``go.mod``, ``Gemfile``, ``pom.xml``) via
+        ``GET /repos/{owner}/{repo}/contents/{manifest}`` (which defaults to the
+        repo's default branch). Each declared package becomes one normalized
+        ``{"repo", "manifest", "ecosystem", "package", "version"}`` dict.
+        ``version`` is the spec the manifest *declares* (covenant inventories the
+        declaration, it never resolves or installs anything) and is ``null`` when
+        no version is pinned. A repo with no recognized manifest contributes no
+        rows. Read-only — only the named manifest files are read (never lockfile
+        graphs, never source), and only package names + declared versions are
+        surfaced.
+        """
+        results: list[dict] = []
+        for full_name in self._reachable_repos(max_pages=max_pages):
+            for manifest, ecosystem in PACKAGE_MANIFESTS:
+                text = self._fetch_file_content(
+                    f"/repos/{full_name}/contents/{manifest}"
+                )
+                if text is None:
+                    continue
+                for pkg in parse_manifest(manifest, text):
+                    results.append(
+                        {
+                            "repo": full_name,
+                            "manifest": manifest,
+                            "ecosystem": ecosystem,
+                            "package": pkg["package"],
+                            "version": pkg["version"],
+                        }
+                    )
+        return results
+
     def audit_dependabot_alerts(
         self, max_pages: int = DEFAULT_MAX_PAGES
     ) -> list[dict]:
@@ -908,6 +956,110 @@ class GitHubClient(BaseSCMClient):
                         or advisory.get("severity"),
                         "state": item.get("state", "open"),
                         "identifier": identifier,
+                    }
+                )
+        return records
+
+    def audit_secret_scanning(
+        self, max_pages: int = DEFAULT_MAX_PAGES
+    ) -> list[dict]:
+        """Audit the OPEN secret-scanning alerts on the reachable repos.
+
+        Where ``--audit-dependabot-alerts`` reports a KNOWN-VULNERABILITY surface
+        (a documented CVE in a dependency the repo ships), secret-scanning alerts
+        report the highest-signal surface of all: a credential the provider's own
+        scanner has ALREADY detected committed in the repo. An OPEN alert is a
+        live leak the org has not yet remediated — the exact thing covenant's
+        ``--scan-secrets``/``--scan-commits`` go looking for, except here the
+        platform has already found and confirmed it. For an authorized engagement
+        this is the first place to look: a reachable repo with open secret-scanning
+        alerts is sitting on credentials that may still authenticate.
+
+        Walks the repositories the token can reach (``GET /user/repos``) and, for
+        each, lists its OPEN secret-scanning alerts
+        (``GET /repos/{owner}/{repo}/secret-scanning/alerts?state=open``),
+        returning a normalized list of
+        ``{"repo", "secret_type", "state", "validity", "html_url"}`` dicts.
+        ``secret_type`` is the provider's classifier for the leaked credential
+        (e.g. ``aws_access_key_id``, ``github_personal_access_token``) — the KIND
+        of secret, never its value. ``validity`` is GitHub's freshness signal
+        (``active``/``inactive``/``unknown``) telling the operator whether the
+        leaked credential is believed to still authenticate, the single most
+        useful triage field. ``html_url`` points at the alert in the GitHub UI,
+        not at the secret.
+
+        **The decisive invariant**: the raw leaked secret is NEVER surfaced. The
+        secret-scanning API returns the matched credential in a ``secret`` field
+        (and a ``secret_type_display_name``); covenant reads neither — it reports
+        only the classifier, state, validity, and the alert URL. Echoing the
+        secret would make covenant's own report a new copy of the leak, the exact
+        anti-pattern ``--scan-secrets`` redaction exists to prevent.
+
+        Only OPEN alerts are requested — a resolved/dismissed alert is not a live
+        leak. A repo with secret scanning disabled (or a token lacking the
+        ``security_events`` scope, or a non-GHAS repo) answers HTTP 403/404 for
+        that repo; covenant skips it rather than failing the whole audit, so a
+        partial-permission token still reports what it can see. Read-only — it
+        only GETs alert metadata and never resolves, dismisses, or reopens an
+        alert.
+        """
+        results: list[dict] = []
+        for full_name in self._reachable_repos(max_pages=max_pages):
+            for record in self._secret_scanning_alerts_for_repo(
+                full_name, max_pages=max_pages
+            ):
+                results.append(record)
+        return results
+
+    def _secret_scanning_alerts_for_repo(
+        self, full_name: str, max_pages: int = DEFAULT_MAX_PAGES
+    ) -> list[dict]:
+        """List one repo's open secret-scanning alerts, skipping repos we can't read.
+
+        Secret-scanning alerts are only readable when the feature is enabled on
+        the repo AND the token carries the ``security_events`` (or, for public
+        repos, ``public_repo``) scope; otherwise GitHub answers 403/404. We
+        swallow those two statuses for a single repo and return no alerts for it
+        rather than aborting the whole audit, so a token with mixed permissions
+        still reports every repo it CAN read.
+        """
+        records: list[dict] = []
+        url = f"{self.base_url}/repos/{full_name}/secret-scanning/alerts"
+        probe = self._request_with_retry(
+            url, {"state": "open", "per_page": 100}, self._headers()
+        )
+        # A repo with secret scanning disabled, or a token without the
+        # security_events scope, yields 403/404 — skip it, do not fail the run.
+        if probe.status_code in (403, 404):
+            return records
+        if probe.status_code == 401:
+            raise SCMError("authentication failed (401) — check the token")
+        if probe.status_code >= 400:
+            raise SCMError(
+                f"{self.base_url} returned HTTP {probe.status_code} "
+                f"for {full_name} secret-scanning alerts"
+            )
+        for resp in self._get_paginated(
+            f"/repos/{full_name}/secret-scanning/alerts",
+            params={"state": "open", "per_page": 100},
+            max_pages=max_pages,
+            next_request=_next_link,
+        ):
+            body = resp.json()
+            if not isinstance(body, list):
+                continue
+            for item in body:
+                # NEVER read item["secret"] or item["secret_type_display_name"]
+                # — the raw credential and its decorated name must not leak into
+                # covenant's report. Only the classifier, state, validity, and
+                # the alert URL are surfaced.
+                records.append(
+                    {
+                        "repo": full_name,
+                        "secret_type": item.get("secret_type"),
+                        "state": item.get("state", "open"),
+                        "validity": item.get("validity") or "unknown",
+                        "html_url": item.get("html_url"),
                     }
                 )
         return records
