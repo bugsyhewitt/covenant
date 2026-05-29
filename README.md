@@ -683,6 +683,74 @@ Example `deploy_keys` array:
 }
 ```
 
+### Branch-protection audit (`--audit-branch-protection`)
+
+Every other `validate-token` flag maps a captured token's **offensive** reach —
+the keys it owns, the repos it can push to, the webhooks it can redirect.
+`--audit-branch-protection` is the **defensive** counterpart: it reports whether
+that reach would actually *land*. A writable deploy key or a permissive PAT is
+only a supply-chain win if the target's protected branches let an unreviewed,
+unsigned, or admin-bypassing push through. Pass `--audit-branch-protection` to
+`validate-token` and covenant walks the repositories the token can reach and, for
+each, audits its protected branches with a **read-only** query, adding a
+`branch_protection` array:
+
+| SCM       | Repos walked                          | Protection endpoint                                       |
+|-----------|---------------------------------------|----------------------------------------------------------|
+| GitHub    | `GET /user/repos`                     | `GET /repos/{owner}/{repo}/branches?protected=true` + `.../branches/{branch}/protection` |
+| GitLab    | `GET /api/v4/projects?membership=true`| `GET /api/v4/projects/{id}/protected_branches` (+ `/approvals`, `/push_rule`) |
+| Bitbucket | `GET /2.0/repositories?role=member`   | `GET /2.0/repositories/{full_name}/branch-restrictions`  |
+
+Each entry is normalized to `{"repo", "branch", "required_reviews",
+"required_review_count", "dismiss_stale_reviews", "require_signed_commits",
+"enforce_admins"}`. **`required_reviews=false` (or a zero `required_review_count`)
+on a reachable repo is the high-signal finding** — an attacker who can push can do
+so unreviewed. The providers model protection differently, so the fields are
+mapped to the nearest equivalent signal:
+
+- **GitHub** maps directly: `required_pull_request_reviews`,
+  `required_signatures.enabled`, and `enforce_admins.enabled`.
+- **GitLab** keeps review/sign policy at the *project* level — `required_reviews`
+  and `required_review_count` come from `approvals_before_merge`,
+  `dismiss_stale_reviews` from `reset_approvals_on_push`, `require_signed_commits`
+  from the `reject_unsigned_commits` push rule, and `enforce_admins` from the
+  protected branch *disallowing* force push. Endpoints a low-privilege token can't
+  read fail soft to the safe defaults so the audit still lists the branches it can
+  see.
+- **Bitbucket Cloud** models protection as a flat list of *restrictions* keyed by
+  branch pattern; covenant aggregates them per pattern. `require_approvals_to_merge`
+  drives the review fields, `reset_pullrequest_approvals_on_change` drives
+  `dismiss_stale_reviews`, and a `force` restriction drives `enforce_admins`.
+  Bitbucket Cloud has no signed-commit restriction, so `require_signed_commits` is
+  always `false` there. The `branch` field carries the restriction *pattern*,
+  which may be a glob (e.g. `release/*`).
+
+The audit is **read-only** — it only GETs policy metadata and never alters
+protection. The walk is bounded by the same `--max-pages` flag and honors the
+scope guardrail and the automatic rate-limit retry/backoff. Like the
+`--enumerate-*` flags the feature is purely additive (all may be combined):
+without the flag the output is unchanged, and with it the v0.1
+`scopes`/`user`/`admin` fields are untouched — only the `branch_protection` array
+is added.
+
+```bash
+covenant github validate-token \
+  --scope-file scope.txt \
+  --audit-branch-protection \
+  --token-env COVENANT_TOKEN
+```
+
+Example `branch_protection` array (a weak and a strong branch):
+
+```json
+{
+  "branch_protection": [
+    { "repo": "acme-corp/spellbook", "branch": "main", "required_reviews": false, "required_review_count": 0, "dismiss_stale_reviews": false, "require_signed_commits": false, "enforce_admins": false },
+    { "repo": "acme-corp/grimoire", "branch": "main", "required_reviews": true, "required_review_count": 2, "dismiss_stale_reviews": true, "require_signed_commits": true, "enforce_admins": true }
+  ]
+}
+```
+
 ## Usage — one example per SCM
 
 GitHub repo recon:

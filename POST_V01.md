@@ -488,10 +488,49 @@ fuller blast-radius picture — rather than reopening closed items.
 > documentation. Full suite: 233 passing (222 baseline + 11 new), zero
 > regressions. README updated with a "Deploy-key enumeration" subsection.
 
-**Remaining candidate directions (unimplemented, for future laps):** branch
-protection / ruleset policy audit, OAuth-app / authorized-application
-enumeration, and commit-history secret scanning (`git log` blob walking beyond
-code-search fragments).
+### Branch-protection audit in validate-token (`--audit-branch-protection`) — ✅ IMPLEMENTED (Phase 2, Rotation 17)
+
+> **Status: shipped.** A read-only `--audit-branch-protection` flag on
+> `validate-token` is the DEFENSIVE counterpart to the `--enumerate-*` family:
+> where those map a captured token's offensive reach (keys it owns, repos it
+> can push to, webhooks it can redirect), this reports whether that reach would
+> actually *land* — i.e. whether the reachable repos' protected branches would
+> stop an unreviewed, unsigned, or admin-bypassing push. It walks the repos the
+> token can reach and, for each, audits its protected branches, adding a
+> normalized `branch_protection` array of `{repo, branch, required_reviews,
+> required_review_count, dismiss_stale_reviews, require_signed_commits,
+> enforce_admins}` entries. `required_reviews=false` (or a zero
+> `required_review_count`) on a reachable repo is the high-signal supply-chain
+> finding. GitHub walks `GET /user/repos` → `GET
+> /repos/{owner}/{repo}/branches?protected=true` → `.../branches/{branch}/protection`
+> (maps `required_pull_request_reviews`, `required_signatures.enabled`,
+> `enforce_admins.enabled` directly); GitLab walks `GET
+> /api/v4/projects?membership=true` → `GET
+> /api/v4/projects/{id}/protected_branches`, resolving the project-level
+> `approvals_before_merge` / `reset_approvals_on_push` (`GET .../approvals`) and
+> `reject_unsigned_commits` (`GET .../push_rule`) once per project and mapping
+> `enforce_admins` to the branch disallowing force push (approval/push-rule
+> endpoints fail soft to safe defaults for low-privilege tokens); Bitbucket
+> walks `GET /2.0/repositories?role=member` → `GET
+> /2.0/repositories/{full_name}/branch-restrictions`, aggregating the flat
+> restriction list per branch pattern (`require_approvals_to_merge`,
+> `reset_pullrequest_approvals_on_change`, `force`) — Bitbucket Cloud has no
+> signed-commit restriction so `require_signed_commits` is always `false` there.
+> The audit is read-only (only GETs policy metadata, never alters protection),
+> reuses the shared paginator, scope guardrail and rate-limit backoff, is bounded
+> by `--max-pages`, and composes with the other `--enumerate-*` flags. Purely
+> additive: the v0.1 `scopes`/`user`/`admin` fields are untouched and the
+> `branch_protection` array appears only when the flag is set. Tests:
+> `tests/test_audit_branch_protection.py` covers each client's normalized shape,
+> the weak-vs-strong posture mapping across all three SCMs, the no-secret/no-key
+> leak invariant, e2e presence-only-when-requested, composition with the other
+> enumerations, the scope-guardrail gate (exit 2), and `--help` documentation.
+> Full suite: 244 passing (233 baseline + 11 new), zero regressions. README
+> updated with a "Branch-protection audit" subsection.
+
+**Remaining candidate directions (unimplemented, for future laps):** OAuth-app /
+authorized-application enumeration, and commit-history secret scanning (`git log`
+blob walking beyond code-search fragments).
 
 ## Follow-on fixes
 

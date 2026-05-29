@@ -313,6 +313,87 @@ class BitbucketClient(BaseSCMClient):
                     )
         return results
 
+    def audit_branch_protection(
+        self, max_pages: int = DEFAULT_MAX_PAGES
+    ) -> list[dict]:
+        """Audit the branch-protection posture of the repos this token reaches.
+
+        Branch protection is the defensive counterpart to the offensive
+        enumeration methods: it tells the operator whether a writable foothold
+        would be stopped before code lands on a protected branch. We walk the
+        repositories the token is a member of
+        (``GET /2.0/repositories?role=member``) and, for each, list its branch
+        restrictions (``GET /2.0/repositories/{full_name}/branch-restrictions``),
+        returning the same normalized
+        ``{"repo", "branch", "required_reviews", "required_review_count",
+        "dismiss_stale_reviews", "require_signed_commits", "enforce_admins"}``
+        shape as the other SCMs.
+
+        Bitbucket Cloud models protection as a flat list of *restriction* objects,
+        each with a ``kind`` (e.g. ``require_approvals_to_merge``,
+        ``reset_pullrequest_approvals_on_change``, ``force``, ``push``) and a
+        branch ``pattern`` (e.g. ``main``, ``release/*``). There is no single
+        per-branch policy object, so we aggregate the restrictions by ``pattern``
+        and map them to covenant's normalized fields:
+
+        * ``required_reviews`` / ``required_review_count`` come from a
+          ``require_approvals_to_merge`` restriction and its ``value``.
+        * ``dismiss_stale_reviews`` maps to the
+          ``reset_pullrequest_approvals_on_change`` restriction.
+        * ``require_signed_commits`` is always ``False`` — Bitbucket Cloud has no
+          signed-commit branch restriction.
+        * ``enforce_admins`` maps to the presence of a ``force`` restriction
+          (force-push is forbidden, i.e. the rules are harder to bypass).
+
+        The ``branch`` field carries the restriction *pattern*, which may be a
+        glob. This is read-only — it only GETs policy metadata.
+        """
+        results: list[dict] = []
+        for full_name in self._reachable_repos(max_pages=max_pages):
+            # pattern -> aggregated restriction kinds/values
+            by_pattern: dict[str, dict] = {}
+            for resp in self._get_paginated(
+                f"/2.0/repositories/{full_name}/branch-restrictions",
+                params={"pagelen": 100},
+                max_pages=max_pages,
+                next_request=_bitbucket_next,
+            ):
+                for item in resp.json().get("values", []):
+                    pattern = item.get("pattern")
+                    if not pattern:
+                        continue
+                    agg = by_pattern.setdefault(
+                        pattern,
+                        {
+                            "required_reviews": False,
+                            "required_review_count": 0,
+                            "dismiss_stale_reviews": False,
+                            "enforce_admins": False,
+                        },
+                    )
+                    kind = item.get("kind")
+                    if kind == "require_approvals_to_merge":
+                        agg["required_reviews"] = True
+                        agg["required_review_count"] = int(item.get("value") or 0)
+                    elif kind == "reset_pullrequest_approvals_on_change":
+                        agg["dismiss_stale_reviews"] = True
+                    elif kind == "force":
+                        agg["enforce_admins"] = True
+            for pattern, agg in by_pattern.items():
+                results.append(
+                    {
+                        "repo": full_name,
+                        "branch": pattern,
+                        "required_reviews": agg["required_reviews"],
+                        "required_review_count": agg["required_review_count"],
+                        "dismiss_stale_reviews": agg["dismiss_stale_reviews"],
+                        # Bitbucket Cloud has no signed-commit restriction kind.
+                        "require_signed_commits": False,
+                        "enforce_admins": agg["enforce_admins"],
+                    }
+                )
+        return results
+
     def _reachable_repos(self, max_pages: int = DEFAULT_MAX_PAGES) -> list[str]:
         """Return the ``workspace/repo`` full names this token is a member of.
 

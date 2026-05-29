@@ -315,6 +315,81 @@ class GitHubClient(BaseSCMClient):
                     )
         return results
 
+    def audit_branch_protection(
+        self, max_pages: int = DEFAULT_MAX_PAGES
+    ) -> list[dict]:
+        """Audit the branch-protection posture of the repos this token can reach.
+
+        Where the enumeration methods map a captured token's *offensive* reach
+        (keys it owns, repos it can push to), branch protection is the *defensive*
+        counterpart: it tells the operator whether a writable foothold — a
+        compromised deploy key, a permissive PAT, a malicious PR — would actually
+        be stopped before landing on an important branch. A protected branch that
+        does NOT require pull-request review, does NOT require signed commits,
+        and/or does NOT enforce its rules on admins is a supply-chain weak point:
+        code can reach the branch with little or no scrutiny.
+
+        This walks the repositories the token can reach (``GET /user/repos``) and,
+        for each, lists its *protected* branches
+        (``GET /repos/{owner}/{repo}/branches?protected=true``) then fetches each
+        one's protection detail
+        (``GET /repos/{owner}/{repo}/branches/{branch}/protection``), returning a
+        normalized list of
+        ``{"repo", "branch", "required_reviews", "required_review_count",
+        "dismiss_stale_reviews", "require_signed_commits", "enforce_admins"}``
+        dicts. ``required_reviews=False`` (or a zero
+        ``required_review_count``) on a reachable repo is the high-signal finding:
+        an attacker who can push can do so unreviewed. This is read-only — it only
+        GETs policy metadata and never alters protection.
+        """
+        results: list[dict] = []
+        for full_name in self._reachable_repos(max_pages=max_pages):
+            for resp in self._get_paginated(
+                f"/repos/{full_name}/branches",
+                params={"protected": "true", "per_page": 100},
+                max_pages=max_pages,
+                next_request=_next_link,
+            ):
+                body = resp.json()
+                if not isinstance(body, list):
+                    continue
+                for branch in body:
+                    branch_name = branch.get("name")
+                    if not branch_name:
+                        continue
+                    results.append(
+                        self._branch_protection_detail(full_name, branch_name)
+                    )
+        return results
+
+    def _branch_protection_detail(self, full_name: str, branch: str) -> dict:
+        """Fetch and normalize one branch's protection policy.
+
+        A protected branch is listed by the branches endpoint, but the detailed
+        policy (required reviews, signed commits, admin enforcement) lives behind
+        ``GET /repos/{owner}/{repo}/branches/{branch}/protection``. We GET that
+        and map GitHub's nested shape into covenant's flat normalized record.
+        """
+        detail = self._get(
+            f"/repos/{full_name}/branches/{branch}/protection"
+        ).json()
+        reviews = detail.get("required_pull_request_reviews") or {}
+        return {
+            "repo": full_name,
+            "branch": branch,
+            "required_reviews": bool(reviews),
+            "required_review_count": reviews.get(
+                "required_approving_review_count", 0
+            ),
+            "dismiss_stale_reviews": bool(reviews.get("dismiss_stale_reviews", False)),
+            "require_signed_commits": bool(
+                (detail.get("required_signatures") or {}).get("enabled", False)
+            ),
+            "enforce_admins": bool(
+                (detail.get("enforce_admins") or {}).get("enabled", False)
+            ),
+        }
+
     def _reachable_repos(self, max_pages: int = DEFAULT_MAX_PAGES) -> list[str]:
         """Return the ``owner/name`` full names of repos this token can reach.
 
