@@ -633,9 +633,51 @@ fuller blast-radius picture — rather than reopening closed items.
 > documentation. Full suite: 279 passing (267 baseline + 12 new), zero
 > regressions. README updated with a "Deployment-environment audit" subsection.
 
+### Member enumeration in validate-token (`--enumerate-members`) — ✅ IMPLEMENTED (Phase 2, Rotation 21)
+
+> **Status: shipped.** A read-only `--enumerate-members` flag on `validate-token`
+> maps the *lateral-movement* surface — the OTHER members of each
+> org/group/workspace a captured token can reach, and at what role. Where the
+> rest of the `--enumerate-*` family maps what *this* token reaches (keys,
+> repos, secrets), this maps the PEOPLE who share that reach: additional
+> identities an operator could target to widen a foothold (phishing, credential
+> reuse, a weaker teammate token) and, for `role="admin"` (the org owners), the
+> accounts whose compromise grants administrative control of the whole org. It
+> reuses `enumerate_orgs` to discover the reachable orgs and, for each, lists its
+> members: GitHub queries `GET /orgs/{org}/members?role=admin|member` (the
+> endpoint carries no per-user role, so covenant queries both role-filtered views
+> and tags each); GitLab walks `GET /api/v4/groups/{id}/members/all` (effective
+> membership incl. inherited, mapping numeric `access_level >= 50` Owner →
+> `admin`); Bitbucket walks `GET /2.0/workspaces/{slug}/members` (mapping the
+> `permission` field `owner` → `admin`). **The decisive invariant is
+> identity-and-role-only disclosure**: covenant surfaces the member's username
+> and role and NEVER an email, SSH/GPG key, or any credential — a directory
+> query, not a data dump. The walk reuses the shared paginator, scope guardrail
+> and rate-limit backoff, is bounded by `--max-pages`, and composes with every
+> other `--enumerate-*`/`--audit-*` flag. Purely additive: the v0.1
+> `scopes`/`user`/`admin` fields are untouched and the `members` array appears
+> only when the flag is set. Tests: `tests/test_enumerate_members.py` covers each
+> client's normalized `{scope, owner, username, role}` shape, the admin/member
+> role mapping across all three SCMs, the no-email/key/credential-leak invariant,
+> e2e presence-only-when-requested, composition with the full
+> `--enumerate-*`/`--audit-*` family, the scope-guardrail gate (exit 2), and
+> `--help` documentation. Full suite: 290 passing (279 baseline + 11 new), zero
+> regressions. README updated with a "Member enumeration" subsection.
+>
+> **Note on the pivot:** the prior "remaining candidate directions" list named
+> OAuth-app / authorized-application enumeration as a top option, but a landscape
+> check showed it lacks three-SCM parity — GitHub removed its authorized-OAuth-apps
+> listing endpoint (only the GitHub-App `/user/installations` survives) and
+> GitLab/Bitbucket have no clean token-reachable equivalent, which would force a
+> lopsided, mostly-stubbed feature that breaks the toolkit's all-three-SCMs-in-parity
+> discipline. Member enumeration, by contrast, has clean, documented, read-only
+> endpoints on all three SCMs and the same high-signal blast-radius framing — so
+> this lap took member enumeration instead.
+
 **Remaining candidate directions (unimplemented, for future laps):** OAuth-app /
-authorized-application enumeration, and commit-history secret scanning (`git log`
-blob walking beyond code-search fragments).
+authorized-application enumeration (note its weak three-SCM parity, above),
+team/sub-group enumeration, and commit-history secret scanning (`git log` blob
+walking beyond code-search fragments).
 
 ## Follow-on fixes
 

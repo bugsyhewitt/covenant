@@ -939,6 +939,59 @@ beside a strongly-gated one):
 }
 ```
 
+### Member enumeration (`--enumerate-members`)
+
+Where the rest of the `--enumerate-*` family maps what *this* token reaches (its
+keys, its repos, the secrets it can read), `--enumerate-members` maps the **people
+who share that reach**: the other members of each org/group/workspace the token
+belongs to, and at what role. That is the **lateral-movement surface** — the set
+of additional identities an operator could target to widen a foothold (phishing,
+credential reuse, a weaker teammate token) — and, for the `role: "admin"` set (the
+org owners), the accounts whose compromise grants administrative control of the
+whole org. Pass `--enumerate-members` to `validate-token` and covenant walks the
+orgs the token can reach (the same set surfaced by `--enumerate-orgs`) and, for
+each, lists its members with a **read-only** directory query, adding a `members`
+array:
+
+| SCM       | Endpoint                                       | `role: "admin"` derived from                          |
+|-----------|------------------------------------------------|--------------------------------------------------------|
+| GitHub    | `GET /orgs/{org}/members?role=admin\|member`    | the `admin` (org owner) role view                      |
+| GitLab    | `GET /api/v4/groups/{id}/members/all`           | the numeric `access_level` (>= 50 Owner)               |
+| Bitbucket | `GET /2.0/workspaces/{slug}/members`            | the `permission` field (`owner`)                       |
+
+Each entry is normalized to `{"scope", "owner", "username", "role"}`, where
+`scope` is `org`/`group`/`workspace` and `role` is `admin` or `member`.
+
+> **Identity and role only — never a credential.** covenant surfaces the
+> member's username and role; it never reads or echoes an email, SSH/GPG key, or
+> any token. This is a directory query, not a data dump.
+
+The walk is bounded by the same `--max-pages` flag and honors the scope guardrail
+and automatic rate-limit retry/backoff. Like the other `--enumerate-*`/`--audit-*`
+flags the feature is purely additive (all may be combined): without the flag the
+output is unchanged, and with it the v0.1 `scopes`/`user`/`admin` fields are
+untouched — only the `members` array is added.
+
+```bash
+covenant github validate-token \
+  --scope-file scope.txt \
+  --enumerate-members \
+  --token-env COVENANT_TOKEN
+```
+
+Example `members` array (an org owner alongside ordinary members — the owner is
+the highest-value lateral target):
+
+```json
+{
+  "members": [
+    { "scope": "org", "owner": "acme-corp", "username": "acme-corp-owner", "role": "admin"  },
+    { "scope": "org", "owner": "acme-corp", "username": "spellcaster",     "role": "member" },
+    { "scope": "org", "owner": "acme-corp", "username": "apprentice",      "role": "member" }
+  ]
+}
+```
+
 ## Usage — one example per SCM
 
 GitHub repo recon:
