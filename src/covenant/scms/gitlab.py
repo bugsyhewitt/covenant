@@ -720,6 +720,108 @@ class GitLabClient(BaseSCMClient):
                     )
         return results
 
+    def enumerate_runners(
+        self, max_pages: int = DEFAULT_MAX_PAGES
+    ) -> list[dict]:
+        """List the self-hosted GitLab CI runners this token can reach.
+
+        GitLab's analogue of a self-hosted GitHub Actions runner is a *runner*
+        attached to a group or project (``runner_type`` ``group_type``/
+        ``project_type``). Every job that targets the runner executes on its
+        host: the runner sees the job's CI/CD variables, the checked-out source
+        and the build artifacts, so a compromised or planted self-hosted runner
+        is a persistence and lateral-movement foothold. A runner registered at
+        *group* scope is the broadest, because any project in the group can
+        dispatch to it.
+
+        Walks the groups the token belongs to (via :meth:`enumerate_orgs`) and
+        lists ``GET /api/v4/groups/{id}/runners`` (``scope="org"``); walks the
+        projects the token is a member of (via :meth:`_reachable_projects`) and
+        lists ``GET /api/v4/projects/{id}/runners`` (``scope="repo"``).
+
+        Returns a normalized list of
+        ``{"scope", "owner", "id", "name", "labels", "self_hosted"}`` dicts.
+        ``name`` is the runner's ``description`` (its human-readable label) and
+        ``labels`` is its ``tag_list`` (the workflow-targeting tags). The
+        ``self_hosted`` field is ``False`` for GitLab.com SaaS shared runners
+        (``is_shared`` true — the platform-managed compute) and ``True``
+        otherwise (org/group/project-attached runners running on infrastructure
+        the org operates). Endpoints a low-privilege token can't read fail soft
+        to an empty result so the audit still reports what it can see. Read-only;
+        the runner *registration token* is never requested or echoed.
+        """
+        results: list[dict] = []
+        for group in self.enumerate_orgs(max_pages=max_pages):
+            owner = group.get("name")
+            if not owner:
+                continue
+            path = f"/api/v4/groups/{_group_id(owner)}/runners"
+            params = {"per_page": _PER_PAGE, "page": 1}
+            try:
+                pages = list(
+                    self._get_paginated(
+                        path,
+                        params=params,
+                        max_pages=max_pages,
+                        next_request=_gitlab_next(path, params),
+                    )
+                )
+            except SCMError:
+                continue
+            for resp in pages:
+                body = resp.json()
+                if not isinstance(body, list):
+                    continue
+                for item in body:
+                    runner_id = item.get("id")
+                    if runner_id is None:
+                        continue
+                    results.append(
+                        {
+                            "scope": "org",
+                            "owner": owner,
+                            "id": runner_id,
+                            "name": item.get("description") or str(runner_id),
+                            "labels": list(item.get("tag_list") or []),
+                            "self_hosted": not bool(item.get("is_shared", False)),
+                        }
+                    )
+        for project in self._reachable_projects(max_pages=max_pages):
+            project_id = project["id"]
+            repo = project["repo"]
+            path = f"/api/v4/projects/{project_id}/runners"
+            params = {"per_page": _PER_PAGE, "page": 1}
+            try:
+                pages = list(
+                    self._get_paginated(
+                        path,
+                        params=params,
+                        max_pages=max_pages,
+                        next_request=_gitlab_next(path, params),
+                    )
+                )
+            except SCMError:
+                continue
+            for resp in pages:
+                body = resp.json()
+                if not isinstance(body, list):
+                    continue
+                for item in body:
+                    runner_id = item.get("id")
+                    if runner_id is None:
+                        continue
+                    results.append(
+                        {
+                            "scope": "repo",
+                            "owner": repo,
+                            "id": runner_id,
+                            "name": item.get("description") or str(runner_id),
+                            "labels": list(item.get("tag_list") or []),
+                            "self_hosted": not bool(item.get("is_shared", False)),
+                        }
+                    )
+        return results
+
     def audit_actions_environments(
         self, max_pages: int = DEFAULT_MAX_PAGES
     ) -> list[dict]:

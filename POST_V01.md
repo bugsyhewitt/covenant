@@ -802,6 +802,57 @@ fuller blast-radius picture — rather than reopening closed items.
 > documentation. Full suite: 330 passing (315 baseline + 15 new), zero
 > regressions. README updated with a "CODEOWNERS-coverage audit" subsection.
 
+### Self-hosted runner enumeration in validate-token (`--enumerate-runners`) — IMPLEMENTED (Phase 2, Rotation 30)
+
+> **Status: shipped.** A read-only `--enumerate-runners` flag on `validate-token`
+> maps the *pipeline-execution-host* blast-radius surface — distinct from the
+> credential surface that `--enumerate-actions-secrets` maps. Every job that
+> targets a self-hosted runner executes on its host and sees that run's
+> `GITHUB_TOKEN` / CI variables / checked-out source and build artifacts, so a
+> compromised or planted self-hosted runner is a persistence and lateral-movement
+> foothold; an org/group/workspace-scoped runner is broadest because every repo
+> in the org can dispatch to it. It walks both the org/group/workspace axis and
+> the repo/project axis the token can reach and adds a `runners` array of
+> `{scope, owner, id, name, labels, self_hosted}` entries. GitHub walks
+> `GET /orgs/{org}/actions/runners` (scope `org`, reusing `enumerate_orgs`) +
+> `GET /repos/{owner}/{repo}/actions/runners` (scope `repo`, reusing
+> `_reachable_repos`); the GitHub Actions runners API by definition lists only
+> self-hosted runners, so `self_hosted=true` always. GitLab walks
+> `GET /api/v4/groups/{id}/runners` + `GET /api/v4/projects/{id}/runners`,
+> mapping `is_shared=true` (the platform-managed SaaS shared runners) to
+> `self_hosted=false` and otherwise `true` — so an operator can distinguish
+> org-controlled infrastructure from the shared compute it does not operate.
+> Bitbucket walks `GET /2.0/workspaces/{slug}/pipelines-config/runners` +
+> `GET /2.0/repositories/{full_name}/pipelines-config/runners`; Pipelines
+> runners are self-hosted by design (`self_hosted=true`). **The decisive
+> invariant is identity-and-labels-only disclosure**: covenant surfaces ONLY
+> the runner id, name, and labels — never a registration/removal token, OAuth
+> client secret, or any credential. Endpoints a low-privilege token can't read
+> fail soft to an empty result so the audit degrades gracefully. The walk
+> reuses the shared paginator, scope guardrail and rate-limit backoff, is
+> bounded by `--max-pages`, and composes with every other `--enumerate-*`/
+> `--audit-*` flag. Purely additive: the v0.1 `scopes`/`user`/`admin` fields
+> are untouched and the `runners` array appears only when the flag is set.
+> Tests: `tests/test_enumerate_runners.py` covers each client's normalized
+> shape, the org-vs-repo `scope` split, the `self_hosted` mapping across all
+> three SCMs (incl. the GitLab `is_shared=true → self_hosted=false` rule), the
+> GitHub label-reduction helper, the no-credential-leak invariant (no
+> `token`/`registration_token`/`oauth_client`/`client_secret`/`value` keys
+> ever present), e2e presence-only-when-requested, composition with the full
+> `--enumerate-*`/`--audit-*` family, the scope-guardrail gate (exit 2), and
+> `--help` documentation. Full suite: 416 passing (403 baseline + 13 new),
+> zero regressions. README updated with a "Self-hosted runner enumeration"
+> subsection.
+>
+> **Why this over Dependabot-alerts / org-members:** the planned options were
+> Dependabot-alerts and org-members. A code/grep check confirmed both are
+> already shipped (Rotation pre-30 dependabot-alerts and Rotation 21
+> `--enumerate-members` respectively). Self-hosted runners are the next
+> high-value, three-SCM-parity audit surface in the same blast-radius axis —
+> distinct from the `--enumerate-actions-secrets` credential surface because
+> they are the *execution hosts*, not the secrets — with clean documented
+> read-only endpoints on every SCM.
+
 **Remaining candidate directions (unimplemented, for future laps):** OAuth-app /
 authorized-application enumeration (note its weak three-SCM parity, above), and
 team/sub-group enumeration.
