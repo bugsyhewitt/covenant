@@ -1278,6 +1278,51 @@ Example `actions_permissions` array (a write-token repo and a disabled repo):
 }
 ```
 
+### Workflow-run activity audit (`--audit-workflow-runs`)
+
+Where `--audit-actions-permissions` and `--audit-actions-environments` report
+the **policy** posture a workflow run inherits (what it is *allowed* to do),
+`--audit-workflow-runs` surfaces observed **activity** (what the pipeline
+actually ran), so an operator can spot anomalous CI patterns before they
+escalate. The decisive high-signal findings:
+
+* a streak of `conclusion="failure"` runs (active attack attempts, broken CI
+  gates, or a runner under load);
+* a `conclusion="cancelled"` / `"STOPPED"` run (operator or defender
+  intervention killing a job in flight); and
+* an unexpected `event` (trigger) distribution — a sudden burst of
+  `workflow_dispatch` / `MANUAL` (manual-trigger abuse) or off-hours
+  `schedule` / `SCHEDULE` runs (a planted cron pipeline) is a CI-misuse signal
+  a posture audit alone does not catch.
+
+Pass `--audit-workflow-runs` to `validate-token` and covenant walks the repos
+the token can reach and, for each, lists its recent pipeline runs — GitHub
+`GET /repos/{owner}/{repo}/actions/runs`, GitLab
+`GET /api/v4/projects/{id}/pipelines`, Bitbucket
+`GET /2.0/repositories/{full_name}/pipelines/`. Each run is normalized to:
+
+```json
+{
+  "repo": "acme-corp/spellbook",
+  "run_id": 900,
+  "name": "CI",
+  "event": "push",
+  "status": "completed",
+  "conclusion": "failure",
+  "created_at": "2026-05-28T10:00:00Z"
+}
+```
+
+`name` is the workflow's human-readable name (GitHub) or the branch/ref the
+pipeline ran on (GitLab/Bitbucket); `event` is the trigger
+(`push`/`pull_request`/`workflow_dispatch`/`schedule`/...); `status` is the
+lifecycle state and `conclusion` is the terminal outcome (`None` while the
+run is still in progress). A repo with Actions/Pipelines disabled or out of
+the token's scope answers 403/404 and is **skipped** (not fatal). Only run
+**metadata** is surfaced — logs, artifact URLs, and any CI/CD variable values
+the run saw are **never** fetched. Read-only; never re-runs, cancels, or
+dispatches a workflow.
+
 ### Self-hosted runner enumeration (`--enumerate-runners`)
 
 Where `--enumerate-actions-secrets` maps the *credential* surface that powers a

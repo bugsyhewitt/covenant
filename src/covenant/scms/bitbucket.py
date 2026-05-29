@@ -1002,6 +1002,78 @@ class BitbucketClient(BaseSCMClient):
         )
         return []
 
+    def audit_workflow_runs(
+        self, max_pages: int = DEFAULT_MAX_PAGES
+    ) -> list[dict]:
+        """Audit recent Bitbucket Pipelines runs across reachable repos.
+
+        Bitbucket Cloud's analogue of GitHub's workflow-run audit. The decisive
+        signal is anomalous pipeline activity: a streak of
+        ``conclusion="FAILED"`` runs (active attack attempts, broken CI gates,
+        runners under load), a ``conclusion="STOPPED"`` run (operator/defender
+        intervention killing a job in flight), or an unexpected ``event``
+        (trigger) distribution — e.g. a sudden burst of ``MANUAL`` triggers or
+        off-hours ``SCHEDULE`` runs (a planted scheduled pipeline) is a
+        CI-misuse signal a posture audit alone does not catch.
+
+        Walks the repositories the token can reach
+        (``GET /2.0/repositories?role=member``) and, for each, lists
+        ``GET /2.0/repositories/{full_name}/pipelines/`` (sorted newest first
+        via ``sort=-created_on``), normalizing each pipeline to
+        ``{"repo", "run_id", "name", "event", "status", "conclusion",
+        "created_at"}`` for cross-SCM parity. ``run_id`` is the pipeline's
+        ``uuid``; ``name`` is the target ``ref_name`` (the branch/tag the
+        pipeline ran on) so an operator can see *which* branch a suspicious
+        run targeted; ``event`` is the trigger name (``PUSH``/``MANUAL``/
+        ``SCHEDULE``/...); ``status`` is the lifecycle state
+        (``PENDING``/``IN_PROGRESS``/``COMPLETED``); and ``conclusion`` is the
+        terminal outcome (``SUCCESSFUL``/``FAILED``/``STOPPED``/``ERROR``/...) —
+        ``None`` while still running.
+
+        Only pipeline *metadata* is surfaced — step logs, artifact URLs, and
+        any Pipelines variable values the run saw are never fetched. A repo
+        with Pipelines disabled or out of the token's scope answers 403/404;
+        covenant skips it (returning nothing for that repo) rather than
+        aborting the whole audit. Read-only — it never re-runs, stops, or
+        triggers a pipeline.
+        """
+        results: list[dict] = []
+        for full_name in self._reachable_repos(max_pages=max_pages):
+            try:
+                pages = list(
+                    self._get_paginated(
+                        f"/2.0/repositories/{full_name}/pipelines/",
+                        params={"pagelen": 100, "sort": "-created_on"},
+                        max_pages=max_pages,
+                        next_request=_bitbucket_next,
+                    )
+                )
+            except SCMError:
+                continue
+            for resp in pages:
+                for item in resp.json().get("values", []):
+                    uuid = item.get("uuid")
+                    if not uuid:
+                        continue
+                    state = item.get("state") or {}
+                    state_name = state.get("name")
+                    result = state.get("result") or {}
+                    conclusion = result.get("name")
+                    trigger = item.get("trigger") or {}
+                    target = item.get("target") or {}
+                    results.append(
+                        {
+                            "repo": full_name,
+                            "run_id": uuid,
+                            "name": target.get("ref_name"),
+                            "event": trigger.get("name"),
+                            "status": state_name,
+                            "conclusion": conclusion,
+                            "created_at": item.get("created_on"),
+                        }
+                    )
+        return results
+
     def enumerate_members(self, max_pages: int = DEFAULT_MAX_PAGES) -> list[dict]:
         """List the other members of the workspaces this token can reach.
 

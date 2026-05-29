@@ -853,6 +853,61 @@ fuller blast-radius picture — rather than reopening closed items.
 > they are the *execution hosts*, not the secrets — with clean documented
 > read-only endpoints on every SCM.
 
+### Workflow-run activity audit in validate-token (`--audit-workflow-runs`) — IMPLEMENTED (Phase 2, Rotation 31)
+
+> **Status: shipped.** A read-only `--audit-workflow-runs` flag on
+> `validate-token` is the *activity* counterpart to the `--audit-actions-*`
+> family. Where `--audit-actions-permissions` and
+> `--audit-actions-environments` report the POLICY a workflow run inherits
+> (what it is *allowed* to do), this surfaces observed ACTIVITY (what the
+> pipeline actually ran), so an operator can spot anomalous CI patterns before
+> they escalate. The decisive high-signal findings: a streak of
+> `conclusion="failure"`/`"FAILED"` runs (active attack attempts, broken CI
+> gates, runners under load), a `conclusion="cancelled"`/`"STOPPED"` run
+> (operator/defender intervention killing a job in flight), and an unexpected
+> `event` distribution — a sudden burst of `workflow_dispatch`/`MANUAL`
+> triggers or off-hours `schedule`/`SCHEDULE` runs (a planted cron pipeline) —
+> all CI-misuse signals a posture audit alone does not catch.
+>
+> It walks the repos the token can reach and lists recent pipeline runs:
+> GitHub `GET /repos/{owner}/{repo}/actions/runs`, GitLab
+> `GET /api/v4/projects/{id}/pipelines`, Bitbucket
+> `GET /2.0/repositories/{full_name}/pipelines/?sort=-created_on`. Each run is
+> normalized to `{repo, run_id, name, event, status, conclusion, created_at}`.
+> `name` is the workflow's human-readable name on GitHub or the ref/branch on
+> GitLab/Bitbucket (the most informative cross-SCM label for *which* branch a
+> suspicious run targeted); `status` is the lifecycle state and `conclusion`
+> is the terminal outcome (`None` while in-flight). For GitLab the flat
+> `status` is split into the normalized status/conclusion pair: a terminal
+> status (success/failed/canceled/skipped/manual) becomes
+> `status="completed"` + `conclusion=<original>`, and a non-terminal one
+> (running/pending) keeps the original status with `conclusion=None`.
+>
+> **The decisive invariant is metadata-only disclosure**: only run metadata
+> is surfaced — step/job logs, artifact URLs, and any CI/CD variable values
+> the run saw are NEVER fetched. A repo with Actions/Pipelines disabled or
+> out of the token's scope answers 403/404 and is skipped (not fatal), so a
+> partial-permission token still reports every repo it can read. Read-only;
+> never re-runs, cancels, or dispatches a workflow.
+>
+> Tests: `tests/test_audit_workflow_runs.py` covers each client's normalized
+> shape, the failure/cancelled/in-flight pattern matrix across all three SCMs,
+> the GitLab terminal-vs-running status/conclusion split, the
+> no-logs/artifacts/CI-variable-leak invariant, e2e presence-only-when-
+> requested, composition with the full `--enumerate-*`/`--audit-*` family,
+> the scope-guardrail gate (exit 2), and `--help` documentation. Full suite:
+> 431 passing (416 baseline + 15 new), zero regressions. README updated with
+> a "Workflow-run activity audit" subsection.
+>
+> **Why this over `--audit-environment-policies`:** the planned options were
+> `--audit-workflow-runs` and `--audit-environment-policies`, but a code/grep
+> check confirmed the latter is already shipped under the name
+> `--audit-actions-environments` (Rotation 20) — it audits environment
+> protection rules (`required_reviewers`, `wait_timer`, `branch_policy`),
+> which is exactly the proposed surface. `--audit-workflow-runs` is the
+> distinct unshipped surface (CI activity rather than environment policy)
+> and the natural next audit axis after the policy audits already shipped.
+
 **Remaining candidate directions (unimplemented, for future laps):** OAuth-app /
 authorized-application enumeration (note its weak three-SCM parity, above), and
 team/sub-group enumeration.

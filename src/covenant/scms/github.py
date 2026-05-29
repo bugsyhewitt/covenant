@@ -1505,6 +1505,78 @@ class GitHubClient(BaseSCMClient):
                 )
         return record
 
+    def audit_workflow_runs(
+        self, max_pages: int = DEFAULT_MAX_PAGES
+    ) -> list[dict]:
+        """Audit recent GitHub Actions workflow runs across reachable repos.
+
+        Where :meth:`audit_actions_permissions` reports the *policy* a workflow
+        run inherits, and :meth:`audit_actions_environments` gates which
+        deployments may reach an environment's secrets, this surfaces the actual
+        *observed pipeline activity* — which workflows ran, what triggered them,
+        and how they concluded — so an operator can spot anomalous CI patterns
+        before they escalate. The decisive high-signal findings are: a streak of
+        ``conclusion="failure"`` runs (active attack attempts, broken CI gates,
+        or a runner under load); ``conclusion="cancelled"`` runs (operator/
+        defender intervention killing a job in flight); and an unexpected
+        ``event`` distribution — a sudden burst of ``workflow_dispatch``
+        (manual-trigger abuse) or off-hours ``schedule`` runs (a planted cron
+        workflow) is a CI-misuse signal a posture audit alone does not catch.
+
+        Walks the repositories the token can reach (``GET /user/repos``) and,
+        for each, lists ``GET /repos/{owner}/{repo}/actions/runs`` (newest
+        first), normalizing each run to
+        ``{"repo", "run_id", "name", "event", "status", "conclusion",
+        "created_at"}``. ``name`` is the workflow's human-readable name (e.g.
+        ``"CI"`` / ``"Deploy"``), ``event`` is the trigger
+        (``push``/``pull_request``/``workflow_dispatch``/``schedule``/...),
+        ``status`` is the lifecycle state (``queued``/``in_progress``/
+        ``completed``), and ``conclusion`` is the terminal outcome
+        (``success``/``failure``/``cancelled``/``skipped``/...) — ``None``
+        while the run is still in progress.
+
+        Only run *metadata* is surfaced — logs, artifact URLs, and any
+        environment-variable values the run saw are never fetched. A repo with
+        Actions disabled or out of the token's scope answers 403/404; covenant
+        skips it (returning nothing for that repo) rather than aborting the
+        whole audit. Read-only — it never re-runs, cancels, or dispatches a
+        workflow.
+        """
+        results: list[dict] = []
+        for full_name in self._reachable_repos(max_pages=max_pages):
+            try:
+                pages = list(
+                    self._get_paginated(
+                        f"/repos/{full_name}/actions/runs",
+                        params={"per_page": 100},
+                        max_pages=max_pages,
+                        next_request=_next_link,
+                    )
+                )
+            except SCMError:
+                # Actions disabled / token lacks scope -> skip this repo.
+                continue
+            for resp in pages:
+                body = resp.json()
+                if not isinstance(body, dict):
+                    continue
+                for item in body.get("workflow_runs", []) or []:
+                    run_id = item.get("id")
+                    if run_id is None:
+                        continue
+                    results.append(
+                        {
+                            "repo": full_name,
+                            "run_id": run_id,
+                            "name": item.get("name"),
+                            "event": item.get("event"),
+                            "status": item.get("status"),
+                            "conclusion": item.get("conclusion"),
+                            "created_at": item.get("created_at"),
+                        }
+                    )
+        return results
+
     def enumerate_members(self, max_pages: int = DEFAULT_MAX_PAGES) -> list[dict]:
         """List the other members of the orgs this token can reach (lateral moves).
 

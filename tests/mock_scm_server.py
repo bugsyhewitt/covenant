@@ -434,6 +434,53 @@ class _GitHubHandler(BaseHTTPRequestHandler):
                     {"enabled": False},
                 )
         elif parsed.path.startswith("/repos/") and parsed.path.endswith(
+            "/actions/runs"
+        ):
+            # Workflow-run activity audit (--audit-workflow-runs). The spellbook
+            # repo's recent runs show the high-signal pattern: a failed run, a
+            # cancelled run, and a workflow_dispatch trigger (manual). The
+            # grimoire repo has Actions disabled and answers 404 — covenant
+            # must SKIP it, not fail the whole audit. Only run metadata is
+            # returned (id, name, event, status, conclusion, created_at); logs,
+            # artifacts, and any environment-variable values are never fetched.
+            repo = "/".join(parsed.path.split("/")[2:4])
+            if repo.endswith("/spellbook"):
+                self._json(
+                    200,
+                    {
+                        "total_count": 3,
+                        "workflow_runs": [
+                            {
+                                "id": 900,
+                                "name": "CI",
+                                "event": "push",
+                                "status": "completed",
+                                "conclusion": "failure",
+                                "created_at": "2026-05-28T10:00:00Z",
+                            },
+                            {
+                                "id": 901,
+                                "name": "Deploy",
+                                "event": "workflow_dispatch",
+                                "status": "completed",
+                                "conclusion": "cancelled",
+                                "created_at": "2026-05-28T11:00:00Z",
+                            },
+                            {
+                                "id": 902,
+                                "name": "Nightly",
+                                "event": "schedule",
+                                "status": "in_progress",
+                                "conclusion": None,
+                                "created_at": "2026-05-28T12:00:00Z",
+                            },
+                        ],
+                    },
+                )
+            else:
+                # grimoire: Actions disabled / token lacks scope.
+                self._json(404, {"message": "Not Found"})
+        elif parsed.path.startswith("/repos/") and parsed.path.endswith(
             "/actions/secrets"
         ):
             # Repo-level Actions secret-NAME enumeration
@@ -1243,6 +1290,42 @@ class _GitLabHandler(BaseHTTPRequestHandler):
                 headers={"X-Page": "1", "X-Next-Page": "", "X-Total-Pages": "1"},
             )
         elif parsed.path.startswith("/api/v4/projects/") and parsed.path.endswith(
+            "/pipelines"
+        ):
+            # Pipeline-activity audit (--audit-workflow-runs). One project
+            # exposes the high-signal pattern: a 'failed' pipeline (terminal),
+            # a 'canceled' pipeline (operator/defender intervention), and a
+            # 'running' pipeline triggered by 'schedule' (off-hours cron job).
+            # Only pipeline metadata is returned — job logs, artifact URLs, and
+            # any CI/CD variable values are never fetched.
+            self._json(
+                200,
+                [
+                    {
+                        "id": 800,
+                        "ref": "main",
+                        "source": "push",
+                        "status": "failed",
+                        "created_at": "2026-05-28T10:00:00Z",
+                    },
+                    {
+                        "id": 801,
+                        "ref": "feature/deploy",
+                        "source": "web",
+                        "status": "canceled",
+                        "created_at": "2026-05-28T11:00:00Z",
+                    },
+                    {
+                        "id": 802,
+                        "ref": "main",
+                        "source": "schedule",
+                        "status": "running",
+                        "created_at": "2026-05-28T12:00:00Z",
+                    },
+                ],
+                headers={"X-Page": "1", "X-Next-Page": "", "X-Total-Pages": "1"},
+            )
+        elif parsed.path.startswith("/api/v4/projects/") and parsed.path.endswith(
             "/environments"
         ):
             # Project-environment listing (--audit-actions-environments).
@@ -1833,6 +1916,50 @@ class _BitbucketHandler(BaseHTTPRequestHandler):
                         },
                     ],
                     "size": 1,
+                },
+            )
+        elif parsed.path.startswith("/2.0/repositories/") and parsed.path.endswith(
+            "/pipelines/"
+        ):
+            # Pipeline-activity audit (--audit-workflow-runs). One repo exposes
+            # the high-signal pattern: a FAILED pipeline (terminal), a STOPPED
+            # pipeline (operator/defender intervention killing a job mid-flight),
+            # and an IN_PROGRESS pipeline with a SCHEDULE trigger (off-hours
+            # planted cron). Only pipeline metadata is returned — step logs,
+            # artifact URLs, and any Pipelines variable values are never fetched.
+            self._json(
+                200,
+                {
+                    "values": [
+                        {
+                            "uuid": "{run-900}",
+                            "state": {
+                                "name": "COMPLETED",
+                                "result": {"name": "FAILED"},
+                            },
+                            "trigger": {"name": "PUSH"},
+                            "target": {"ref_name": "main"},
+                            "created_on": "2026-05-28T10:00:00Z",
+                        },
+                        {
+                            "uuid": "{run-901}",
+                            "state": {
+                                "name": "COMPLETED",
+                                "result": {"name": "STOPPED"},
+                            },
+                            "trigger": {"name": "MANUAL"},
+                            "target": {"ref_name": "feature/deploy"},
+                            "created_on": "2026-05-28T11:00:00Z",
+                        },
+                        {
+                            "uuid": "{run-902}",
+                            "state": {"name": "IN_PROGRESS"},
+                            "trigger": {"name": "SCHEDULE"},
+                            "target": {"ref_name": "main"},
+                            "created_on": "2026-05-28T12:00:00Z",
+                        },
+                    ],
+                    "size": 3,
                 },
             )
         elif parsed.path.startswith("/2.0/repositories/") and parsed.path.endswith(
