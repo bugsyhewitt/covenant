@@ -720,6 +720,39 @@ class _GitHubHandler(BaseHTTPRequestHandler):
             else:
                 # grimoire: code scanning disabled / never run / token lacks scope.
                 self._json(404, {"message": "no analysis found"})
+        elif parsed.path.startswith("/repos/") and parsed.path.endswith(
+            "/security-advisories"
+        ):
+            # Repository-advisory audit (--audit-advisory-alerts). The spellbook
+            # repo has one PUBLISHED CRITICAL advisory the org's own maintainers
+            # wrote up against their OWN product (the high-signal publisher case);
+            # the grimoire repo has the advisory feature unavailable / token
+            # lacks scope, which GitHub answers with 404 — covenant must SKIP that
+            # repo, not fail the whole audit. The API returns the advisory's
+            # GHSA/CVE handle, summary, severity, state, and html_url; only that
+            # metadata is surfaced, never a credential.
+            repo = "/".join(parsed.path.split("/")[2:4])
+            if repo.endswith("/spellbook"):
+                self._json(
+                    200,
+                    [
+                        {
+                            "ghsa_id": "GHSA-spel-lboo-k123",
+                            "cve_id": "CVE-2024-13337",
+                            "summary": "Authentication bypass in spellbook "
+                            "session handling",
+                            "severity": "critical",
+                            "state": "published",
+                            "html_url": (
+                                "https://github.com/acme-corp/spellbook/"
+                                "security/advisories/GHSA-spel-lboo-k123"
+                            ),
+                        },
+                    ],
+                )
+            else:
+                # grimoire: advisory feature unavailable / token lacks scope.
+                self._json(404, {"message": "Not Found"})
         elif parsed.path.startswith("/repos/") and "/contents/" in parsed.path:
             # CODEOWNERS-coverage audit (--audit-codeowners). GitHub serves file
             # content as a JSON object with base64-encoded `content`. covenant
