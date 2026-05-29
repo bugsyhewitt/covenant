@@ -1254,6 +1254,34 @@ class GitLabClient(BaseSCMClient):
                     )
         return results
 
+    def audit_advisory_alerts(
+        self, max_pages: int = DEFAULT_MAX_PAGES
+    ) -> list[dict]:
+        """No-op on GitLab, which has no maintainer-authored repository advisory API.
+
+        The GitHub flag enumerates the repository security advisories a project's
+        own maintainers PUBLISHED against their own product — each a GHSA the org
+        wrote up itself. GitLab has no equivalent per-project, token-readable
+        surface: GitLab's advisory data is the global GitLab Advisory Database
+        (an instance-wide feed of third-party CVEs, already covered as a
+        DEPENDENCY signal by ``--audit-dependabot-alerts``), not a per-repo
+        endpoint where a project publishes advisories about its OWN code, so
+        there is nothing for covenant to enumerate here under this flag.
+
+        To keep the cross-provider audit uniform, the method exists and returns
+        an empty list (the same normalized shape the other SCMs would yield, just
+        with no entries) and records a single non-fatal ``warnings`` note so the
+        operator understands the empty result reflects a platform-model
+        difference, not a clean bill of health. Read-only — it makes no request.
+        """
+        self.warnings.append(
+            "advisory-alerts audit is unsupported on GitLab "
+            "(no per-project maintainer-authored repository advisory API; the "
+            "GitLab Advisory Database is an instance-wide third-party feed); "
+            "result is empty by design, not a clean bill of health"
+        )
+        return []
+
     def audit_actions_permissions(
         self, max_pages: int = DEFAULT_MAX_PAGES
     ) -> list[dict]:

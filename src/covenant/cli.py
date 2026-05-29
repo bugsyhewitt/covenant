@@ -556,6 +556,37 @@ def _build_parser() -> argparse.ArgumentParser:
             ),
         )
         token.add_argument(
+            "--audit-advisory-alerts",
+            action="store_true",
+            default=False,
+            dest="audit_advisory_alerts",
+            help=(
+                "additionally audit the PUBLISHED repository advisory alerts on "
+                "the repos this token can reach (GitHub repository security "
+                "advisories) via a read-only query; adds an 'advisory_alerts' "
+                "array of {repo, ghsa_id, cve_id, summary, severity, state, "
+                "html_url} entries. Distinct from the other security flags: "
+                "where --audit-dependabot-alerts reports a repo CONSUMING the "
+                "global advisory database (a known CVE in a third-party "
+                "DEPENDENCY) and --audit-code-scanning-alerts reports static-"
+                "analyzer findings in the repo's own source, this reports the "
+                "repo as a PUBLISHER of advisories — the GHSAs the org's own "
+                "maintainers wrote up against their OWN product, each naming a "
+                "real (often already-patched) vulnerability in code the org "
+                "ships to others; on an unpatched or partially-deployed fleet "
+                "the GHSA/CVE handle and summary point straight at where a "
+                "working exploit still lives. Only PUBLISHED advisories are "
+                "requested; a repo with none, the feature unavailable, or out of "
+                "the token's scope is skipped (403/404) rather than failing the "
+                "whole audit. ghsa_id/cve_id are advisory handles, never a "
+                "credential. GitLab (its advisory data is an instance-wide "
+                "third-party feed) and Bitbucket Cloud have no per-repo "
+                "maintainer-authored advisory API, so the result is empty there "
+                "with an explanatory warning. Read-only; never creates, edits, "
+                "or publishes an advisory."
+            ),
+        )
+        token.add_argument(
             "--audit-actions-permissions",
             action="store_true",
             default=False,
@@ -992,6 +1023,19 @@ def main(argv: list[str] | None = None) -> int:
                 payload["code_scanning_alerts"] = (
                     client.audit_code_scanning_alerts(max_pages=max_pages)
                 )
+            # Optional repository-advisory audit. Read-only, additive: the v0.1
+            # validate-token fields are untouched and the 'advisory_alerts' array
+            # only appears when --audit-advisory-alerts is requested. Reports the
+            # PUBLISHED advisories the org's own maintainers wrote up against
+            # their OWN product (GitHub repository security advisories) — the
+            # publisher-side triage axis the dependency and code-flaw audits do
+            # not cover. A repo with no advisories or out of the token's scope is
+            # skipped; only advisory metadata (GHSA/CVE handle + summary + URL)
+            # is surfaced, never a credential.
+            if getattr(args, "audit_advisory_alerts", False):
+                payload["advisory_alerts"] = (
+                    client.audit_advisory_alerts(max_pages=max_pages)
+                )
             # Optional Actions-permission audit. Read-only, additive: the v0.1
             # validate-token fields are untouched and the 'actions_permissions'
             # array only appears when --audit-actions-permissions is requested.
@@ -1090,6 +1134,7 @@ def main(argv: list[str] | None = None) -> int:
                 or getattr(args, "audit_packages", False)
                 or getattr(args, "audit_secret_scanning", False)
                 or getattr(args, "audit_code_scanning_alerts", False)
+                or getattr(args, "audit_advisory_alerts", False)
                 or getattr(args, "audit_actions_permissions", False)
                 or getattr(args, "enumerate_members", False)
                 or getattr(args, "enumerate_collaborators", False)

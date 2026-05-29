@@ -1172,6 +1172,105 @@ class GitHubClient(BaseSCMClient):
                 )
         return records
 
+    def audit_advisory_alerts(
+        self, max_pages: int = DEFAULT_MAX_PAGES
+    ) -> list[dict]:
+        """Audit the PUBLISHED repository advisory alerts on reachable repos.
+
+        Distinct from the other security-triage flags. ``--audit-dependabot-
+        alerts`` reports a repo CONSUMING the global advisory database (a known
+        CVE in one of its third-party dependencies), and
+        ``--audit-code-scanning-alerts`` reports static-analyzer findings in the
+        repo's own source. This flag reports the repo as a PUBLISHER of
+        advisories: the maintainer-authored repository security advisories
+        (``GET /repos/{owner}/{repo}/security-advisories``) — each a GHSA the
+        org's own team wrote up against its own product, naming a real, often
+        already-patched, vulnerability in code the org ships to others.
+
+        For an authorized engagement this is a high-signal triage axis the other
+        audits do not cover: a PUBLISHED advisory is the org confirming, in its
+        own words, that a specific vulnerability class existed in a reachable
+        repo — the GHSA/CVE handle, the severity band, and the summary point
+        straight at the affected component and the patch boundary, which on an
+        unpatched or partially-deployed fleet is exactly where a working exploit
+        still lives.
+
+        Walks the repositories the token can reach (``GET /user/repos``) and, for
+        each, lists its PUBLISHED advisories, returning a normalized list of
+        ``{"repo", "ghsa_id", "cve_id", "summary", "severity", "state",
+        "html_url"}`` dicts. ``ghsa_id`` is the advisory handle and ``cve_id``
+        its CVE mapping when assigned (both advisory identifiers, never a
+        credential), ``severity`` the advisory's CVSS band
+        (``critical``/``high``/``medium``/``low``), and ``summary`` the
+        maintainer's one-line description. ``html_url`` points at the advisory in
+        the GitHub UI.
+
+        Only PUBLISHED advisories are requested (``state=published``) — a draft
+        advisory is not yet a confirmed, public finding. A repo with no
+        advisories, the feature unavailable, or a token lacking the required
+        scope answers HTTP 403/404 for that repo; covenant skips it rather than
+        failing the whole audit, so a partial-permission token still reports what
+        it can see. Read-only — it only GETs advisory metadata and never creates,
+        edits, or publishes an advisory.
+        """
+        results: list[dict] = []
+        for full_name in self._reachable_repos(max_pages=max_pages):
+            for record in self._advisory_alerts_for_repo(
+                full_name, max_pages=max_pages
+            ):
+                results.append(record)
+        return results
+
+    def _advisory_alerts_for_repo(
+        self, full_name: str, max_pages: int = DEFAULT_MAX_PAGES
+    ) -> list[dict]:
+        """List one repo's published advisory alerts, skipping repos we can't read.
+
+        Repository advisories are only readable when the token carries the scope
+        the endpoint requires; a repo with no advisories or out of the token's
+        reach answers 403/404. We swallow those statuses for a single repo and
+        return no advisories for it rather than aborting the whole audit, so a
+        token with mixed permissions still reports every repo it CAN read.
+        """
+        records: list[dict] = []
+        url = f"{self.base_url}/repos/{full_name}/security-advisories"
+        probe = self._request_with_retry(
+            url, {"state": "published", "per_page": 100}, self._headers()
+        )
+        # A repo with no advisories, the feature unavailable, or a token without
+        # the required scope yields 403/404 — skip it, do not fail the run.
+        if probe.status_code in (403, 404):
+            return records
+        if probe.status_code == 401:
+            raise SCMError("authentication failed (401) — check the token")
+        if probe.status_code >= 400:
+            raise SCMError(
+                f"{self.base_url} returned HTTP {probe.status_code} "
+                f"for {full_name} repository advisories"
+            )
+        for resp in self._get_paginated(
+            f"/repos/{full_name}/security-advisories",
+            params={"state": "published", "per_page": 100},
+            max_pages=max_pages,
+            next_request=_next_link,
+        ):
+            body = resp.json()
+            if not isinstance(body, list):
+                continue
+            for item in body:
+                records.append(
+                    {
+                        "repo": full_name,
+                        "ghsa_id": item.get("ghsa_id"),
+                        "cve_id": item.get("cve_id"),
+                        "summary": item.get("summary"),
+                        "severity": item.get("severity"),
+                        "state": item.get("state", "published"),
+                        "html_url": item.get("html_url"),
+                    }
+                )
+        return records
+
     def audit_actions_permissions(
         self, max_pages: int = DEFAULT_MAX_PAGES
     ) -> list[dict]:

@@ -1125,6 +1125,78 @@ Example `code_scanning_alerts` array (one open critical CodeQL finding):
 }
 ```
 
+### Repository-advisory audit (`--audit-advisory-alerts`)
+
+This is the **publisher-side** counterpart to the two consumer-side flags above.
+Where `--audit-dependabot-alerts` reports a repo **consuming** the global advisory
+database (a known CVE in one of its third-party **dependencies**) and
+`--audit-code-scanning-alerts` reports static-analyzer findings in the repo's
+**own source**, `--audit-advisory-alerts` reports the repo as a **publisher** of
+advisories — the **published** repository security advisories the org's own
+maintainers wrote up against their **own product**. Each is a GHSA the org
+authored itself, naming a real (often already-patched) vulnerability in code the
+org **ships to others**; on an unpatched or partially-deployed fleet the GHSA/CVE
+handle and summary point straight at where a working exploit still lives. It is
+the triage axis the dependency and code-flaw audits do not cover.
+
+Pass `--audit-advisory-alerts` to `validate-token` and covenant walks the repos
+the token can reach, listing each one's **published** advisories with a
+**read-only** query:
+
+| SCM       | Endpoint                                                          | Surface read                          |
+|-----------|-------------------------------------------------------------------|---------------------------------------|
+| GitHub    | `GET /repos/{owner}/{repo}/security-advisories?state=published`   | maintainer-authored repo advisories   |
+| GitLab    | *(unsupported — advisory data is an instance-wide third-party feed; empty result + warning)* | — |
+| Bitbucket | *(unsupported — no maintainer-authored repository advisory API; empty result + warning)*     | — |
+
+Each advisory is normalized to
+`{"repo", "ghsa_id", "cve_id", "summary", "severity", "state", "html_url"}`.
+`ghsa_id` is the advisory handle and `cve_id` its CVE mapping when assigned (both
+advisory identifiers, never a credential), `severity` the advisory's CVSS band
+(`critical`/`high`/`medium`/`low`), and `summary` the maintainer's one-line
+description. `html_url` points at the advisory in the provider UI.
+
+> **Only published advisories, only metadata.** A draft advisory is not yet a
+> confirmed, public finding, so only `state=published` is requested. A repo with
+> no advisories, the feature unavailable, or out of the token's scope answers
+> HTTP 403/404 for that repo; covenant **skips it** rather than failing the whole
+> audit, so a partial-permission token still reports every repo it can read. The
+> audit is read-only — it only GETs advisory metadata and never creates, edits,
+> or publishes an advisory. GitLab and Bitbucket Cloud have no per-repo
+> maintainer-authored advisory surface, so the result is empty there with an
+> explanatory warning rather than a misleading clean bill of health.
+
+The walk is bounded by the same `--max-pages` flag and honors the scope guardrail
+and automatic rate-limit retry/backoff. Like the other `--enumerate-*`/`--audit-*`
+flags the feature is purely additive (all may be combined): without the flag the
+output is unchanged, and with it the v0.1 `scopes`/`user`/`admin` fields are
+untouched — only the `advisory_alerts` array is added.
+
+```bash
+covenant github validate-token \
+  --scope-file scope.txt \
+  --audit-advisory-alerts \
+  --token-env COVENANT_TOKEN
+```
+
+Example `advisory_alerts` array (one published critical advisory):
+
+```json
+{
+  "advisory_alerts": [
+    {
+      "repo": "acme-corp/spellbook",
+      "ghsa_id": "GHSA-spel-lboo-k123",
+      "cve_id": "CVE-2024-13337",
+      "summary": "Authentication bypass in spellbook session handling",
+      "severity": "critical",
+      "state": "published",
+      "html_url": "https://github.com/acme-corp/spellbook/security/advisories/GHSA-spel-lboo-k123"
+    }
+  ]
+}
+```
+
 ### Actions-permission audit (`--audit-actions-permissions`)
 
 Where `--audit-actions-environments` gates which **deployments** may reach an

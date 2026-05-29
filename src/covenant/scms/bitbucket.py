@@ -838,6 +838,30 @@ class BitbucketClient(BaseSCMClient):
         )
         return []
 
+    def audit_advisory_alerts(
+        self, max_pages: int = DEFAULT_MAX_PAGES
+    ) -> list[dict]:
+        """No-op on Bitbucket Cloud, which has no repository advisory API.
+
+        The GitHub flag enumerates the repository security advisories a repo's own
+        maintainers published against their own product. Bitbucket Cloud has no
+        equivalent first-party surface: it offers no token-readable endpoint where
+        a repository publishes maintainer-authored advisories about its own code,
+        so there is nothing for covenant to enumerate here.
+
+        To keep the cross-provider audit uniform, the method exists and returns an
+        empty list (the same normalized shape the other SCMs would yield, just
+        with no entries) and records a single non-fatal ``warnings`` note so the
+        empty result is not misread as a clean bill of health. Read-only — it
+        makes no request at all.
+        """
+        self.warnings.append(
+            "advisory-alerts audit is unsupported on Bitbucket Cloud "
+            "(no maintainer-authored repository advisory API); result is empty "
+            "by design, not a clean bill of health"
+        )
+        return []
+
     def audit_actions_permissions(
         self, max_pages: int = DEFAULT_MAX_PAGES
     ) -> list[dict]:
