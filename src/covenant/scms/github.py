@@ -547,6 +547,56 @@ class GitHubClient(BaseSCMClient):
                     )
         return results
 
+    def audit_repo_visibility(
+        self, max_pages: int = DEFAULT_MAX_PAGES
+    ) -> list[dict]:
+        """Audit the visibility posture of the repos this token can reach.
+
+        Where the ``--enumerate-*`` flags map a captured token's *offensive*
+        reach (keys it owns, repos it can push to, secrets it can read), the
+        visibility audit reports the *exposure* posture: which reachable repos
+        are PUBLIC. A public repo is the org's external attack surface — its
+        full source, history, issues and (often) leaked secrets are world-
+        readable. An unexpectedly public repo (a repo that should be private
+        given its name or its private siblings) is a direct leak/supply-chain
+        risk, and a public repo is also where covenant's own ``recon-code``
+        secret scanning has the most to find. Flagging the public set lets an
+        operator triage the externally-reachable surface first.
+
+        Walks ``GET /user/repos`` with the shared paginator and returns a
+        normalized list of ``{"repo", "visibility", "public"}`` dicts. GitHub
+        repos report a boolean ``private`` (and, on newer API versions, a
+        ``visibility`` string of ``public``/``private``/``internal``); covenant
+        derives ``public`` from ``private`` and surfaces the human-readable
+        ``visibility`` label. Only repo metadata is read — no code, no secrets.
+        """
+        results: list[dict] = []
+        for resp in self._get_paginated(
+            "/user/repos",
+            params={"per_page": 100},
+            max_pages=max_pages,
+            next_request=_next_link,
+        ):
+            body = resp.json()
+            if not isinstance(body, list):
+                continue
+            for item in body:
+                full_name = item.get("full_name")
+                if not full_name:
+                    continue
+                is_private = bool(item.get("private", True))
+                visibility = item.get("visibility") or (
+                    "private" if is_private else "public"
+                )
+                results.append(
+                    {
+                        "repo": full_name,
+                        "visibility": visibility,
+                        "public": not is_private,
+                    }
+                )
+        return results
+
     def validate_token(self) -> dict:
         resp = self._get("/user")
         user = resp.json()

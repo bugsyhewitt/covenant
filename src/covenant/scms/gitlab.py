@@ -692,6 +692,57 @@ class GitLabClient(BaseSCMClient):
                     )
         return results
 
+    def audit_repo_visibility(
+        self, max_pages: int = DEFAULT_MAX_PAGES
+    ) -> list[dict]:
+        """Audit the visibility posture of the projects this token can reach.
+
+        The GitLab analogue of GitHub's repo-visibility audit. Where the
+        ``--enumerate-*`` flags map a token's offensive reach, this reports the
+        *exposure* posture: which reachable projects are externally readable. A
+        ``public`` project is world-readable; an ``internal`` project is
+        readable by any authenticated user of the instance (a broader-than-it-
+        looks exposure on a shared/self-managed GitLab) — both are part of the
+        attack surface a ``private`` project is not.
+
+        Walks ``GET /api/v4/projects?membership=true`` with the shared offset
+        paginator and returns ``{"repo", "visibility", "public"}`` dicts.
+        GitLab reports a ``visibility`` string of ``public``/``internal``/
+        ``private``; covenant surfaces it verbatim and sets ``public`` true for
+        anything other than ``private`` (so ``internal``'s instance-wide
+        readability is flagged as exposure, not hidden as private). Only project
+        metadata is read.
+        """
+        path = "/api/v4/projects"
+        params = {"membership": "true", "per_page": _PER_PAGE, "page": 1}
+        results: list[dict] = []
+        for resp in self._get_paginated(
+            path,
+            params=params,
+            max_pages=max_pages,
+            next_request=_gitlab_next(path, params),
+        ):
+            body = resp.json()
+            if not isinstance(body, list):
+                continue
+            for item in body:
+                repo = (
+                    item.get("path_with_namespace")
+                    or item.get("name")
+                    or (str(item["id"]) if item.get("id") is not None else None)
+                )
+                if not repo:
+                    continue
+                visibility = item.get("visibility") or "private"
+                results.append(
+                    {
+                        "repo": repo,
+                        "visibility": visibility,
+                        "public": visibility != "private",
+                    }
+                )
+        return results
+
     def validate_token(self) -> dict:
         user = self._get("/api/v4/user").json()
         username = user.get("username")

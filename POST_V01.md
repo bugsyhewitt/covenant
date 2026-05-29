@@ -564,11 +564,40 @@ fuller blast-radius picture — rather than reopening closed items.
 > `--help` documentation. Full suite: 255 passing (244 baseline + 11 new), zero
 > regressions. README updated with a "CI/CD secret enumeration" subsection.
 
+### Repository-visibility audit in validate-token (`--audit-repo-visibility`) — ✅ IMPLEMENTED (Phase 2, Rotation 19)
+
+> **Status: shipped.** A read-only `--audit-repo-visibility` flag on
+> `validate-token` reports the EXPOSURE posture of the repos a captured token
+> can reach — the complement to the offensive `--enumerate-*` family. Where
+> those map keys/secrets/push-reach, this flags which reachable repos are
+> PUBLIC: a public repo is the org's external attack surface (world-readable
+> source, history, issues and any leaked secrets) and the place covenant's own
+> `recon-code` scanning finds the most, so an unexpectedly public repo beside
+> private siblings is a direct leak/supply-chain risk. It walks the repos the
+> token can reach and adds a normalized `repo_visibility` array of
+> `{repo, visibility, public}` entries. GitHub walks `GET /user/repos` (derives
+> `public` from the boolean `private`); GitLab walks `GET
+> /api/v4/projects?membership=true` (maps the `visibility` string, flagging
+> `internal` — readable by any authenticated instance user — as `public=true`
+> exposure, not hidden as private); Bitbucket walks `GET
+> /2.0/repositories?role=member` (derives `public` from `is_private`). Only repo
+> metadata is read — no code, no secrets. The walk reuses the shared paginator,
+> scope guardrail and rate-limit backoff, is bounded by `--max-pages`, and
+> composes with every other `--enumerate-*`/`--audit-*` flag. Purely additive:
+> the v0.1 `scopes`/`user`/`admin` fields are untouched and the
+> `repo_visibility` array appears only when the flag is set. Tests:
+> `tests/test_audit_repo_visibility.py` covers each client's normalized shape,
+> the public/private derivation across all three SCMs (incl. the GitLab
+> `internal`→`public=true` rule), the metadata-only invariant, e2e
+> presence-only-when-requested, composition with the full
+> `--enumerate-*`/`--audit-*` family, the scope-guardrail gate (exit 2), and
+> `--help` documentation. Full suite: 267 passing (255 baseline + 12 new), zero
+> regressions. README updated with a "Repository-visibility audit" subsection.
+
 **Remaining candidate directions (unimplemented, for future laps):** OAuth-app /
 authorized-application enumeration, GitHub Actions *environments* and their
-protection rules, repository-visibility audit (public repos in an org), and
-commit-history secret scanning (`git log` blob walking beyond code-search
-fragments).
+protection rules, and commit-history secret scanning (`git log` blob walking
+beyond code-search fragments).
 
 ## Follow-on fixes
 

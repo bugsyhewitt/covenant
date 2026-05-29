@@ -809,6 +809,57 @@ Example `actions_secrets` array (org-wide and repo-scoped secrets, names only):
 }
 ```
 
+### Repository-visibility audit (`--audit-repo-visibility`)
+
+Where the `--enumerate-*` flags map a captured token's *offensive* reach (the
+keys it owns, the repos it can push to, the CI/CD secrets it can read),
+`--audit-repo-visibility` reports the *exposure* posture: **which reachable repos
+are public**. A public repo is the org's external attack surface — its full
+source, history, issues and any leaked secrets are world-readable — and is
+exactly where covenant's own `recon-code` secret scanning has the most to find.
+An unexpectedly public repo sitting alongside private siblings is a direct
+leak/supply-chain risk worth triaging first. Pass `--audit-repo-visibility` to
+`validate-token` and covenant walks the repos the token can reach with a
+**read-only** query, adding a `repo_visibility` array:
+
+| SCM       | Endpoint                                  | `public` derived from                                    |
+|-----------|-------------------------------------------|----------------------------------------------------------|
+| GitHub    | `GET /user/repos`                         | the boolean `private` flag                               |
+| GitLab    | `GET /api/v4/projects?membership=true`    | the `visibility` string (`public`/`internal`/`private`)  |
+| Bitbucket | `GET /2.0/repositories?role=member`       | the boolean `is_private` flag                            |
+
+Each entry is normalized to `{"repo", "visibility", "public"}`.
+
+> **GitLab `internal` projects are flagged `public: true`.** An `internal`
+> project is readable by *any authenticated user of the instance* — a
+> broader-than-it-looks exposure on a shared or self-managed GitLab — so the
+> audit treats anything other than `private` as exposure rather than hiding it.
+
+Only repo metadata (name + visibility) is read — no code, no secrets. The walk is
+bounded by the same `--max-pages` flag and honors the scope guardrail and
+automatic rate-limit retry/backoff. Like the other `--enumerate-*`/`--audit-*`
+flags the feature is purely additive (all may be combined): without the flag the
+output is unchanged, and with it the v0.1 `scopes`/`user`/`admin` fields are
+untouched — only the `repo_visibility` array is added.
+
+```bash
+covenant github validate-token \
+  --scope-file scope.txt \
+  --audit-repo-visibility \
+  --token-env COVENANT_TOKEN
+```
+
+Example `repo_visibility` array (a public repo flagged among private siblings):
+
+```json
+{
+  "repo_visibility": [
+    { "repo": "acme-corp/spellbook", "visibility": "private", "public": false },
+    { "repo": "acme-corp/grimoire",  "visibility": "public",  "public": true  }
+  ]
+}
+```
+
 ## Usage — one example per SCM
 
 GitHub repo recon:
