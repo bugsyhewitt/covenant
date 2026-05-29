@@ -646,6 +646,32 @@ def _build_parser() -> argparse.ArgumentParser:
             ),
         )
         token.add_argument(
+            "--audit-workflow-runs",
+            action="store_true",
+            default=False,
+            dest="audit_workflow_runs",
+            help=(
+                "additionally audit recent CI/CD pipeline runs on the repos "
+                "this token can reach (GitHub Actions workflow runs, GitLab "
+                "project pipelines, Bitbucket Pipelines runs) via a read-only "
+                "query; adds a 'workflow_runs' array of {repo, run_id, name, "
+                "event, status, conclusion, created_at} entries. Where the "
+                "other --audit-actions-* flags report POLICY posture (what a "
+                "run is allowed to do), this reports observed ACTIVITY (what "
+                "the pipeline actually ran): a streak of conclusion='failure' "
+                "runs is an active attack/broken-CI signal, a 'cancelled' run "
+                "is operator/defender intervention, and an unexpected 'event' "
+                "distribution (a burst of manual/workflow_dispatch triggers, "
+                "off-hours schedule runs) is a CI-misuse signal a posture "
+                "audit alone does not catch. Only run METADATA is surfaced — "
+                "logs, artifact URLs, and any CI variable values the run saw "
+                "are never fetched. A repo with Actions/Pipelines disabled or "
+                "out of the token's scope is skipped (403/404) rather than "
+                "failing the whole audit. Read-only; never re-runs, cancels, "
+                "or dispatches a workflow."
+            ),
+        )
+        token.add_argument(
             "--enumerate-members",
             action="store_true",
             default=False,
@@ -740,7 +766,7 @@ def _build_parser() -> argparse.ArgumentParser:
                 f"maximum org/group/workspace/key/gist/webhook/deploy-key/"
                 f"branch-protection/actions-secret/repo-visibility/codeowners/"
                 f"dependabot-alert/package/secret-scanning/member/collaborator/"
-                f"commit pages to walk when "
+                f"commit/workflow-run pages to walk when "
                 f"an --enumerate-*, "
                 f"--audit-*, or --scan-commits flag is set (default: "
                 f"{DEFAULT_MAX_PAGES}, hard ceiling: {HARD_MAX_PAGES})."
@@ -1089,6 +1115,19 @@ def main(argv: list[str] | None = None) -> int:
                 payload["actions_permissions"] = (
                     client.audit_actions_permissions(max_pages=max_pages)
                 )
+            # Optional workflow-run activity audit. Read-only, additive: the
+            # v0.1 validate-token fields are untouched and the 'workflow_runs'
+            # array only appears when --audit-workflow-runs is requested.
+            # Reports observed CI activity (which workflows ran, what triggered
+            # them, how they concluded) — the activity counterpart to the
+            # policy audits; anomalous failure/cancellation streaks and
+            # unexpected trigger distributions are CI-misuse signals a posture
+            # audit alone does not catch. Only run metadata is surfaced, never
+            # logs, artifacts, or CI variable values.
+            if getattr(args, "audit_workflow_runs", False):
+                payload["workflow_runs"] = client.audit_workflow_runs(
+                    max_pages=max_pages
+                )
             # Optional org/group/workspace member enumeration. Read-only,
             # additive: the v0.1 validate-token fields are untouched and the
             # 'members' array only appears when --enumerate-members is
@@ -1178,6 +1217,7 @@ def main(argv: list[str] | None = None) -> int:
                 or getattr(args, "audit_code_scanning_alerts", False)
                 or getattr(args, "audit_advisory_alerts", False)
                 or getattr(args, "audit_actions_permissions", False)
+                or getattr(args, "audit_workflow_runs", False)
                 or getattr(args, "enumerate_members", False)
                 or getattr(args, "enumerate_collaborators", False)
                 or getattr(args, "scan_commits", False)

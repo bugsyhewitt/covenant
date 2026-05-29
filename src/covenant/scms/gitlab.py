@@ -1413,6 +1413,84 @@ class GitLabClient(BaseSCMClient):
         )
         return []
 
+    def audit_workflow_runs(
+        self, max_pages: int = DEFAULT_MAX_PAGES
+    ) -> list[dict]:
+        """Audit recent CI pipelines across the projects this token can reach.
+
+        GitLab's analogue of GitHub's workflow-run audit. The decisive signal is
+        anomalous pipeline activity: a streak of ``status="failed"`` pipelines
+        (active attack attempts, broken CI gates, runners under load), a
+        ``status="canceled"`` pipeline (operator/defender intervention), or an
+        unexpected ``event`` (trigger ``source``) distribution — e.g. a sudden
+        burst of ``web`` (manual UI triggers), ``api`` (automation triggers),
+        or off-hours ``schedule`` runs (a planted cron pipeline) is a CI-misuse
+        signal a posture audit alone does not catch.
+
+        Walks ``GET /api/v4/projects?membership=true`` and, for each, lists
+        ``GET /api/v4/projects/{id}/pipelines`` (newest first), normalizing each
+        pipeline to ``{"repo", "run_id", "name", "event", "status", "conclusion",
+        "created_at"}`` for cross-SCM parity. ``run_id`` is the pipeline ``id``,
+        ``event`` is GitLab's ``source`` (trigger:
+        ``push``/``web``/``api``/``schedule``/``merge_request_event``/...),
+        ``status`` is the lifecycle state (``pending``/``running``/...) for
+        in-flight pipelines and ``"completed"`` once terminal, and ``conclusion``
+        is the terminal outcome (``success``/``failed``/``canceled``/
+        ``skipped``/...) — ``None`` while still running. ``name`` is the
+        pipeline's ``ref`` (branch/tag) so an operator can see *which* branch a
+        suspicious run targeted; GitLab does not name pipelines individually,
+        so the ref is the most informative label.
+
+        Only pipeline *metadata* is surfaced — job logs, artifact URLs, and any
+        CI/CD variable values the pipeline saw are never fetched. A project the
+        token can't read fails soft (skipped, not aborted). Read-only.
+        """
+        results: list[dict] = []
+        for project in self._reachable_projects(max_pages=max_pages):
+            project_id = project["id"]
+            repo = project["repo"]
+            path = f"/api/v4/projects/{project_id}/pipelines"
+            params = {"per_page": _PER_PAGE, "page": 1}
+            try:
+                pages = list(
+                    self._get_paginated(
+                        path,
+                        params=params,
+                        max_pages=max_pages,
+                        next_request=_gitlab_next(path, params),
+                    )
+                )
+            except SCMError:
+                continue
+            for resp in pages:
+                body = resp.json()
+                if not isinstance(body, list):
+                    continue
+                for item in body:
+                    pipeline_id = item.get("id")
+                    if pipeline_id is None:
+                        continue
+                    raw_status = item.get("status")
+                    terminal = raw_status in (
+                        "success",
+                        "failed",
+                        "canceled",
+                        "skipped",
+                        "manual",
+                    )
+                    results.append(
+                        {
+                            "repo": repo,
+                            "run_id": pipeline_id,
+                            "name": item.get("ref"),
+                            "event": item.get("source"),
+                            "status": "completed" if terminal else raw_status,
+                            "conclusion": raw_status if terminal else None,
+                            "created_at": item.get("created_at"),
+                        }
+                    )
+        return results
+
     def enumerate_members(self, max_pages: int = DEFAULT_MAX_PAGES) -> list[dict]:
         """List the other members of the groups this token can reach (lateral moves).
 
