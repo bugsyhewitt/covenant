@@ -296,6 +296,58 @@ class GitLabClient(BaseSCMClient):
                 )
         return results
 
+    def enumerate_gists(self, max_pages: int = DEFAULT_MAX_PAGES) -> list[dict]:
+        """List the snippets owned by this token's account (leak surface).
+
+        GitLab's analogue of a GitHub gist is the *snippet*; ``GET
+        /api/v4/snippets`` returns the snippets owned by the authenticated user.
+        We walk it with the shared offset paginator and return the same
+        normalized ``{"id", "description", "visibility", "url", "files"}`` shape
+        as the other SCMs' :meth:`enumerate_gists`, so the output is uniform
+        across providers. Snippets, like gists, routinely carry pasted config
+        and ``.env`` excerpts; we surface FILENAMES (the leak signal) but never
+        the snippet CONTENT — covenant maps the attack surface, it does not
+        exfiltrate it. ``title`` is used as the description when no explicit
+        description is present (GitLab snippets always have a title).
+        """
+        path = "/api/v4/snippets"
+        params = {"per_page": _PER_PAGE, "page": 1}
+        results: list[dict] = []
+        for resp in self._get_paginated(
+            path,
+            params=params,
+            max_pages=max_pages,
+            next_request=_gitlab_next(path, params),
+        ):
+            body = resp.json()
+            if not isinstance(body, list):
+                continue
+            for item in body:
+                snippet_id = item.get("id")
+                if snippet_id is None:
+                    continue
+                # Newer GitLab returns a `files` array of {path, raw_url};
+                # older single-file snippets carry only `file_name`. Collect
+                # the filenames from whichever is present (content is omitted).
+                files = [
+                    f.get("path")
+                    for f in item.get("files", [])
+                    if isinstance(f, dict) and f.get("path")
+                ]
+                if not files and item.get("file_name"):
+                    files = [item["file_name"]]
+                results.append(
+                    {
+                        "id": snippet_id,
+                        "description": item.get("description")
+                        or item.get("title"),
+                        "visibility": item.get("visibility", "private"),
+                        "url": item.get("web_url"),
+                        "files": sorted(files),
+                    }
+                )
+        return results
+
     def validate_token(self) -> dict:
         user = self._get("/api/v4/user").json()
         username = user.get("username")

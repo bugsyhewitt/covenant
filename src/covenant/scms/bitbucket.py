@@ -233,6 +233,46 @@ class BitbucketClient(BaseSCMClient):
                 )
         return results
 
+    def enumerate_gists(self, max_pages: int = DEFAULT_MAX_PAGES) -> list[dict]:
+        """List the snippets owned by this token's account (leak surface).
+
+        Bitbucket's analogue of a GitHub gist is the *snippet*; ``GET
+        /2.0/snippets`` returns the snippets the authenticated token owns. We
+        walk it with the shared ``next``-envelope paginator and return the same
+        normalized ``{"id", "description", "visibility", "url", "files"}`` shape
+        as the other SCMs' :meth:`enumerate_gists`, so the output is uniform
+        across providers. Snippets often carry pasted config and ``.env``
+        excerpts; we surface FILENAMES (the leak signal) but never the snippet
+        CONTENT — covenant maps the attack surface, it does not exfiltrate it.
+        """
+        results: list[dict] = []
+        for resp in self._get_paginated(
+            "/2.0/snippets",
+            params={"pagelen": 100, "role": "owner"},
+            max_pages=max_pages,
+            next_request=_bitbucket_next,
+        ):
+            for item in resp.json().get("values", []):
+                snippet_id = item.get("id")
+                if not snippet_id:
+                    continue
+                links = item.get("links", {}).get("html", {})
+                # `files` is an object keyed by filename; expose only the
+                # filenames (the leak signal), never the file links/content.
+                files = sorted((item.get("files") or {}).keys())
+                results.append(
+                    {
+                        "id": snippet_id,
+                        "description": item.get("title"),
+                        "visibility": "private"
+                        if item.get("is_private")
+                        else "public",
+                        "url": links.get("href"),
+                        "files": files,
+                    }
+                )
+        return results
+
     def validate_token(self) -> dict:
         user = self._get("/2.0/user").json()
         username = user.get("username") or user.get("nickname")

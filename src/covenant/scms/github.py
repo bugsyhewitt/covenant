@@ -224,6 +224,51 @@ class GitHubClient(BaseSCMClient):
                 )
         return results
 
+    def enumerate_gists(self, max_pages: int = DEFAULT_MAX_PAGES) -> list[dict]:
+        """List the gists owned by this token's account (leaked-credential surface).
+
+        Walks ``GET /gists`` (the authenticated user's own gists — both public
+        and secret) with the shared paginator, returning a normalized list of
+        ``{"id", "description", "visibility", "url", "files"}`` dicts. Gists are
+        a notorious credential-leak vector: developers paste config snippets,
+        ``.env`` excerpts and ad-hoc scripts into "secret" gists that are in fact
+        readable by anyone with the URL. This enumeration is the recon analogue
+        of :meth:`enumerate_keys`: it maps the blast radius of a captured token
+        by surfacing every gist the identity owns, including the FILENAMES (a
+        ``credentials.json`` or ``.env`` filename is itself a strong signal)
+        WITHOUT dumping file CONTENT — covenant reports the attack surface, it
+        does not exfiltrate the contents.
+        """
+        results: list[dict] = []
+        for resp in self._get_paginated(
+            "/gists",
+            params={"per_page": 100},
+            max_pages=max_pages,
+            next_request=_next_link,
+        ):
+            body = resp.json()
+            if not isinstance(body, list):
+                continue
+            for item in body:
+                gist_id = item.get("id")
+                if not gist_id:
+                    continue
+                # files is an object keyed by filename; we expose only the
+                # filenames (the leak signal), never the raw_url/content.
+                files = sorted((item.get("files") or {}).keys())
+                results.append(
+                    {
+                        "id": gist_id,
+                        "description": item.get("description"),
+                        "visibility": "public"
+                        if item.get("public")
+                        else "secret",
+                        "url": item.get("html_url"),
+                        "files": files,
+                    }
+                )
+        return results
+
     def validate_token(self) -> dict:
         resp = self._get("/user")
         user = resp.json()

@@ -249,6 +249,33 @@ class _GitHubHandler(BaseHTTPRequestHandler):
                     },
                 ],
             )
+        elif parsed.path == "/gists":
+            # Gist enumeration (--enumerate-gists). Public metadata + filenames
+            # only; the raw_url/content of each file is deliberately omitted.
+            self._json(
+                200,
+                [
+                    {
+                        "id": "gist1",
+                        "description": "deploy helper",
+                        "public": True,
+                        "html_url": "https://gist.github.com/spellcaster/gist1",
+                        "files": {
+                            "deploy.sh": {"filename": "deploy.sh"},
+                        },
+                    },
+                    {
+                        "id": "gist2",
+                        "description": "scratch env",
+                        "public": False,
+                        "html_url": "https://gist.github.com/spellcaster/gist2",
+                        "files": {
+                            ".env": {"filename": ".env"},
+                            "notes.md": {"filename": "notes.md"},
+                        },
+                    },
+                ],
+            )
         elif parsed.path == "/user/orgs":
             # Org/blast-radius enumeration (--enumerate-orgs). Supports the
             # MULTIPAGE_PREFIX is not relevant here (no query); serve a single
@@ -403,6 +430,33 @@ class _GitLabHandler(BaseHTTPRequestHandler):
                     {
                         "id": 9,
                         "key": "-----BEGIN PGP PUBLIC KEY BLOCK-----\nmQ ...armor... \n-----END PGP PUBLIC KEY BLOCK-----",
+                    },
+                ],
+                headers={"X-Page": "1", "X-Next-Page": "", "X-Total-Pages": "1"},
+            )
+        elif parsed.path == "/api/v4/snippets":
+            # Snippet enumeration (--enumerate-gists). Exercises both the newer
+            # `files` array shape and the legacy single `file_name` shape.
+            self._json(
+                200,
+                [
+                    {
+                        "id": 51,
+                        "title": "deploy helper",
+                        "description": None,
+                        "visibility": "public",
+                        "web_url": "https://gitlab.com/-/snippets/51",
+                        "files": [
+                            {"path": "deploy.sh", "raw_url": "https://x/raw"},
+                        ],
+                    },
+                    {
+                        "id": 52,
+                        "title": "scratch env",
+                        "description": "private creds",
+                        "visibility": "private",
+                        "web_url": "https://gitlab.com/-/snippets/52",
+                        "file_name": ".env",
                     },
                 ],
                 headers={"X-Page": "1", "X-Next-Page": "", "X-Total-Pages": "1"},
@@ -575,6 +629,40 @@ class _BitbucketHandler(BaseHTTPRequestHandler):
                             "uuid": "{key-2}",
                             "label": "ci-runner",
                             "key": "ssh-rsa AAAAB3NzaC1yc2EAAAADAQAB ci",
+                        },
+                    ],
+                    "size": 2,
+                },
+            )
+        elif parsed.path == "/2.0/snippets":
+            # Snippet enumeration (--enumerate-gists). `files` is an object
+            # keyed by filename; only the filenames are surfaced as the leak
+            # signal (the file links/content are omitted from covenant output).
+            self._json(
+                200,
+                {
+                    "values": [
+                        {
+                            "id": "snip1",
+                            "title": "deploy helper",
+                            "is_private": False,
+                            "links": {
+                                "html": {
+                                    "href": "https://bitbucket.org/snippets/spellcaster/snip1"
+                                }
+                            },
+                            "files": {"deploy.sh": {"links": {}}},
+                        },
+                        {
+                            "id": "snip2",
+                            "title": "scratch env",
+                            "is_private": True,
+                            "links": {
+                                "html": {
+                                    "href": "https://bitbucket.org/snippets/spellcaster/snip2"
+                                }
+                            },
+                            "files": {".env": {"links": {}}, "notes.md": {"links": {}}},
                         },
                     ],
                     "size": 2,

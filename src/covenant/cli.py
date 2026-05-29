@@ -293,13 +293,29 @@ def _build_parser() -> argparse.ArgumentParser:
             ),
         )
         token.add_argument(
+            "--enumerate-gists",
+            action="store_true",
+            default=False,
+            dest="enumerate_gists",
+            help=(
+                "additionally list the gists/snippets owned by this token's "
+                "account (GitHub gists, GitLab snippets, Bitbucket snippets) "
+                "via a read-only query; adds a 'gists' array of "
+                "{id, description, visibility, url, files} entries. Gists and "
+                "snippets are a notorious leaked-credential vector; the FILE "
+                "NAMES are surfaced as a leak signal (e.g. '.env', "
+                "'credentials.json') but file CONTENT is never read or echoed."
+            ),
+        )
+        token.add_argument(
             "--max-pages",
             type=int,
             default=DEFAULT_MAX_PAGES,
             help=(
-                f"maximum org/group/workspace/key pages to walk when "
-                f"--enumerate-orgs or --enumerate-keys is set (default: "
-                f"{DEFAULT_MAX_PAGES}, hard ceiling: {HARD_MAX_PAGES})."
+                f"maximum org/group/workspace/key/gist pages to walk when "
+                f"--enumerate-orgs, --enumerate-keys or --enumerate-gists is "
+                f"set (default: {DEFAULT_MAX_PAGES}, hard ceiling: "
+                f"{HARD_MAX_PAGES})."
             ),
         )
 
@@ -480,9 +496,16 @@ def main(argv: list[str] | None = None) -> int:
             # 'keys' array only appears when --enumerate-keys is requested.
             if getattr(args, "enumerate_keys", False):
                 payload["keys"] = client.enumerate_keys(max_pages=max_pages)
+            # Optional gist/snippet enumeration. Read-only, additive: the v0.1
+            # validate-token fields are untouched and the 'gists' array only
+            # appears when --enumerate-gists is requested. Only filenames are
+            # surfaced (the leak signal); file content is never read.
+            if getattr(args, "enumerate_gists", False):
+                payload["gists"] = client.enumerate_gists(max_pages=max_pages)
             if (
                 getattr(args, "enumerate_orgs", False)
                 or getattr(args, "enumerate_keys", False)
+                or getattr(args, "enumerate_gists", False)
             ) and client.warnings:
                 payload["warnings"] = list(client.warnings)
         else:  # pragma: no cover - argparse guarantees a valid module

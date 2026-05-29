@@ -534,6 +534,56 @@ Example output (combined with `--enumerate-orgs`):
 }
 ```
 
+### Gist/snippet enumeration (`--enumerate-gists`)
+
+Where keys tell you *how a credential can persist*, gists and snippets tell you
+*what it has already leaked*. Pass `--enumerate-gists` to `validate-token` and
+covenant additionally walks the gists (GitHub) / snippets (GitLab, Bitbucket)
+**owned** by the account with a **read-only** query and adds a `gists` array to
+the output:
+
+| SCM       | Endpoint walked         | Unit     |
+|-----------|-------------------------|----------|
+| GitHub    | `GET /gists`            | gist     |
+| GitLab    | `GET /api/v4/snippets`  | snippet  |
+| Bitbucket | `GET /2.0/snippets`     | snippet  |
+
+Why this matters for recon: gists and snippets are a notorious leaked-credential
+vector — developers paste `.env` excerpts, config files and ad-hoc deploy scripts
+into "secret" gists that are in fact readable by anyone who has the URL. Mapping
+which gists an identity owns, and especially their **filenames**, is a high-signal
+recon move: a gist named `credentials.json` or `.env` is itself a finding before
+you ever read a byte of its content.
+
+Each entry is normalized to `{"id", "description", "visibility", "url", "files"}`
+where `files` is the list of **filenames** in the gist/snippet. **Only filenames
+are emitted — covenant never reads or echoes the file CONTENT.** It maps the
+attack surface; it does not exfiltrate it. GitHub's "secret" gists are reported
+with `visibility: "secret"` (an honest label: a "secret" gist is unlisted, not
+private). The walk is bounded by the same `--max-pages` flag and honors the scope
+guardrail and the automatic rate-limit retry/backoff. Like the other `--enumerate-*`
+flags the feature is purely additive (all three may be combined): without the flag
+the output is unchanged, and with it the v0.1 `scopes`/`user`/`admin` fields are
+untouched — only the `gists` array is added.
+
+```bash
+covenant github validate-token \
+  --scope-file scope.txt \
+  --enumerate-gists \
+  --token-env COVENANT_TOKEN
+```
+
+Example `gists` array:
+
+```json
+{
+  "gists": [
+    { "id": "gist1", "description": "deploy helper", "visibility": "public", "url": "https://gist.github.com/spellcaster/gist1", "files": ["deploy.sh"] },
+    { "id": "gist2", "description": "scratch env", "visibility": "secret", "url": "https://gist.github.com/spellcaster/gist2", "files": [".env", "notes.md"] }
+  ]
+}
+```
+
 ## Usage — one example per SCM
 
 GitHub repo recon:
