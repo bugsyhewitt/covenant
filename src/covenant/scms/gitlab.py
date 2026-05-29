@@ -396,6 +396,119 @@ class GitLabClient(BaseSCMClient):
                     )
         return results
 
+    def audit_branch_protection(
+        self, max_pages: int = DEFAULT_MAX_PAGES
+    ) -> list[dict]:
+        """Audit the branch-protection posture of the projects this token reaches.
+
+        Branch protection is the defensive counterpart to the offensive
+        enumeration methods: it tells the operator whether a writable foothold
+        would actually be stopped before code lands on a protected branch. We walk
+        the projects the token is a member of
+        (``GET /api/v4/projects?membership=true``) and, for each, list its
+        protected branches (``GET /api/v4/projects/{id}/protected_branches``),
+        returning the same normalized
+        ``{"repo", "branch", "required_reviews", "required_review_count",
+        "dismiss_stale_reviews", "require_signed_commits", "enforce_admins"}``
+        shape as the other SCMs.
+
+        GitLab models protection differently from GitHub, so the fields are mapped
+        to the nearest equivalent signal and the per-project policy is fetched
+        once and reused for every branch on that project:
+
+        * ``required_reviews`` / ``required_review_count`` come from the project's
+          ``approvals_before_merge`` (``GET /api/v4/projects/{id}/approvals``):
+          ``required_reviews`` is ``True`` when at least one approval is required.
+        * ``dismiss_stale_reviews`` maps to ``reset_approvals_on_push``.
+        * ``require_signed_commits`` maps to the project push rule
+          ``reject_unsigned_commits`` (``GET /api/v4/projects/{id}/push_rule``).
+        * ``enforce_admins`` maps to the protected branch *disallowing* force
+          push (``not allow_force_push``) — the nearest "rules are not bypassable"
+          signal GitLab exposes per branch.
+
+        This is read-only — it only GETs policy metadata and never alters
+        protection. Endpoints that a low-privilege token can't read (approvals /
+        push rules often require Maintainer) fail soft to the safe defaults so the
+        audit still reports the protected branches it can see.
+        """
+        results: list[dict] = []
+        for project in self._reachable_projects(max_pages=max_pages):
+            project_id = project["id"]
+            repo = project["repo"]
+            policy = self._project_protection_policy(project_id)
+            bp_path = f"/api/v4/projects/{project_id}/protected_branches"
+            bp_params = {"per_page": _PER_PAGE, "page": 1}
+            for resp in self._get_paginated(
+                bp_path,
+                params=bp_params,
+                max_pages=max_pages,
+                next_request=_gitlab_next(bp_path, bp_params),
+            ):
+                body = resp.json()
+                if not isinstance(body, list):
+                    continue
+                for item in body:
+                    branch = item.get("name")
+                    if not branch:
+                        continue
+                    results.append(
+                        {
+                            "repo": repo,
+                            "branch": branch,
+                            "required_reviews": policy["required_review_count"] > 0,
+                            "required_review_count": policy["required_review_count"],
+                            "dismiss_stale_reviews": policy["dismiss_stale_reviews"],
+                            "require_signed_commits": policy[
+                                "require_signed_commits"
+                            ],
+                            "enforce_admins": not bool(
+                                item.get("allow_force_push", False)
+                            ),
+                        }
+                    )
+        return results
+
+    def _project_protection_policy(self, project_id) -> dict:
+        """Fetch the project-level approval and push-rule policy once per project.
+
+        GitLab keeps the review-count and signed-commit requirements at the
+        *project* level (not per branch), so we resolve them a single time and
+        reuse the result for every protected branch. Both endpoints may be denied
+        to a low-privilege token; on any error we fall back to the safe,
+        unprotected-looking defaults so the audit degrades gracefully rather than
+        aborting.
+        """
+        required_review_count = 0
+        dismiss_stale_reviews = False
+        require_signed_commits = False
+        try:
+            approvals = self._get(
+                f"/api/v4/projects/{project_id}/approvals"
+            ).json()
+            required_review_count = int(
+                approvals.get("approvals_before_merge", 0) or 0
+            )
+            dismiss_stale_reviews = bool(
+                approvals.get("reset_approvals_on_push", False)
+            )
+        except (SCMError, ValueError, TypeError):
+            pass
+        try:
+            push_rule = self._get(
+                f"/api/v4/projects/{project_id}/push_rule"
+            ).json()
+            if isinstance(push_rule, dict):
+                require_signed_commits = bool(
+                    push_rule.get("reject_unsigned_commits", False)
+                )
+        except (SCMError, ValueError, TypeError):
+            pass
+        return {
+            "required_review_count": required_review_count,
+            "dismiss_stale_reviews": dismiss_stale_reviews,
+            "require_signed_commits": require_signed_commits,
+        }
+
     def _reachable_projects(
         self, max_pages: int = DEFAULT_MAX_PAGES
     ) -> list[dict]:

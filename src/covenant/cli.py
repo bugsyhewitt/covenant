@@ -342,13 +342,34 @@ def _build_parser() -> argparse.ArgumentParser:
             ),
         )
         token.add_argument(
+            "--audit-branch-protection",
+            action="store_true",
+            default=False,
+            dest="audit_branch_protection",
+            help=(
+                "additionally audit the branch-protection posture of the repos "
+                "this token can reach (GitHub branch protection, GitLab "
+                "protected branches + approval/push rules, Bitbucket branch "
+                "restrictions) via a read-only query; adds a "
+                "'branch_protection' array of {repo, branch, required_reviews, "
+                "required_review_count, dismiss_stale_reviews, "
+                "require_signed_commits, enforce_admins} entries. This is the "
+                "DEFENSIVE counterpart to the --enumerate-* flags: it reveals "
+                "whether a writable foothold would be stopped before code lands "
+                "on a protected branch. A protected branch with "
+                "required_reviews=false is a supply-chain weak point. The audit "
+                "never alters protection."
+            ),
+        )
+        token.add_argument(
             "--max-pages",
             type=int,
             default=DEFAULT_MAX_PAGES,
             help=(
-                f"maximum org/group/workspace/key/gist/webhook/deploy-key pages "
-                f"to walk when an --enumerate-* flag is set (default: "
-                f"{DEFAULT_MAX_PAGES}, hard ceiling: {HARD_MAX_PAGES})."
+                f"maximum org/group/workspace/key/gist/webhook/deploy-key/"
+                f"branch-protection pages to walk when an --enumerate-* or "
+                f"--audit-* flag is set (default: {DEFAULT_MAX_PAGES}, hard "
+                f"ceiling: {HARD_MAX_PAGES})."
             ),
         )
 
@@ -553,12 +574,23 @@ def main(argv: list[str] | None = None) -> int:
                 payload["deploy_keys"] = client.enumerate_deploy_keys(
                     max_pages=max_pages
                 )
+            # Optional branch-protection audit. Read-only, additive: the v0.1
+            # validate-token fields are untouched and the 'branch_protection'
+            # array only appears when --audit-branch-protection is requested.
+            # This is the DEFENSIVE counterpart to the --enumerate-* flags —
+            # it reports whether reachable repos would stop an unreviewed or
+            # unsigned push, never altering protection.
+            if getattr(args, "audit_branch_protection", False):
+                payload["branch_protection"] = client.audit_branch_protection(
+                    max_pages=max_pages
+                )
             if (
                 getattr(args, "enumerate_orgs", False)
                 or getattr(args, "enumerate_keys", False)
                 or getattr(args, "enumerate_gists", False)
                 or getattr(args, "enumerate_webhooks", False)
                 or getattr(args, "enumerate_deploy_keys", False)
+                or getattr(args, "audit_branch_protection", False)
             ) and client.warnings:
                 payload["warnings"] = list(client.warnings)
         else:  # pragma: no cover - argparse guarantees a valid module

@@ -307,6 +307,44 @@ class _GitHubHandler(BaseHTTPRequestHandler):
                     {"full_name": "acme-corp/grimoire", "private": False},
                 ],
             )
+        elif parsed.path.startswith("/repos/") and parsed.path.endswith(
+            "/protection"
+        ):
+            # Per-branch protection detail (--audit-branch-protection). The
+            # spellbook 'main' branch is WEAK: no required reviews, no signed
+            # commits, admins not enforced (the high-signal supply-chain gap).
+            # The grimoire 'main' branch is STRONG.
+            # path: /repos/{owner}/{repo}/branches/{branch}/protection
+            segs = parsed.path.split("/")
+            repo = "/".join(segs[2:4])
+            weak = repo.endswith("/spellbook")
+            if weak:
+                self._json(
+                    200,
+                    {
+                        "required_pull_request_reviews": None,
+                        "required_signatures": {"enabled": False},
+                        "enforce_admins": {"enabled": False},
+                    },
+                )
+            else:
+                self._json(
+                    200,
+                    {
+                        "required_pull_request_reviews": {
+                            "required_approving_review_count": 2,
+                            "dismiss_stale_reviews": True,
+                        },
+                        "required_signatures": {"enabled": True},
+                        "enforce_admins": {"enabled": True},
+                    },
+                )
+        elif parsed.path.startswith("/repos/") and parsed.path.endswith(
+            "/branches"
+        ):
+            # Protected-branch listing (--audit-branch-protection). Each repo has
+            # one protected branch, 'main'.
+            self._json(200, [{"name": "main", "protected": True}])
         elif parsed.path.startswith("/repos/") and parsed.path.endswith("/keys"):
             # Per-repo deploy-key enumeration (--enumerate-deploy-keys). The
             # `key` is the PUBLIC SSH key; no private material is ever returned.
@@ -532,6 +570,40 @@ class _GitLabHandler(BaseHTTPRequestHandler):
                 ],
                 headers={"X-Page": "1", "X-Next-Page": "", "X-Total-Pages": "1"},
             )
+        elif parsed.path.startswith("/api/v4/projects/") and parsed.path.endswith(
+            "/protected_branches"
+        ):
+            # Protected-branch listing (--audit-branch-protection). One protected
+            # branch, 'main', which DISALLOWS force push (enforce_admins true).
+            self._json(
+                200,
+                [
+                    {
+                        "id": 1,
+                        "name": "main",
+                        "allow_force_push": False,
+                    },
+                ],
+                headers={"X-Page": "1", "X-Next-Page": "", "X-Total-Pages": "1"},
+            )
+        elif parsed.path.startswith("/api/v4/projects/") and parsed.path.endswith(
+            "/approvals"
+        ):
+            # Project approval policy (--audit-branch-protection). Two approvals
+            # required, approvals reset on push (dismiss_stale_reviews true).
+            self._json(
+                200,
+                {
+                    "approvals_before_merge": 2,
+                    "reset_approvals_on_push": True,
+                },
+            )
+        elif parsed.path.startswith("/api/v4/projects/") and parsed.path.endswith(
+            "/push_rule"
+        ):
+            # Project push rule (--audit-branch-protection). Unsigned commits are
+            # rejected (require_signed_commits true).
+            self._json(200, {"id": 1, "reject_unsigned_commits": True})
         elif parsed.path.startswith("/api/v4/projects/") and parsed.path.endswith(
             "/deploy_keys"
         ):
@@ -778,6 +850,39 @@ class _BitbucketHandler(BaseHTTPRequestHandler):
                         },
                     ],
                     "size": 1,
+                },
+            )
+        elif parsed.path.startswith("/2.0/repositories/") and parsed.path.endswith(
+            "/branch-restrictions"
+        ):
+            # Branch-restriction listing (--audit-branch-protection). Bitbucket
+            # returns a flat list of restriction objects keyed by pattern + kind;
+            # covenant aggregates them per pattern. The 'main' pattern requires 2
+            # approvals, resets approvals on change, and forbids force push.
+            self._json(
+                200,
+                {
+                    "values": [
+                        {
+                            "id": 1,
+                            "kind": "require_approvals_to_merge",
+                            "pattern": "main",
+                            "value": 2,
+                        },
+                        {
+                            "id": 2,
+                            "kind": "reset_pullrequest_approvals_on_change",
+                            "pattern": "main",
+                            "value": None,
+                        },
+                        {
+                            "id": 3,
+                            "kind": "force",
+                            "pattern": "main",
+                            "value": None,
+                        },
+                    ],
+                    "size": 3,
                 },
             )
         elif parsed.path.startswith("/2.0/repositories/") and parsed.path.endswith(
