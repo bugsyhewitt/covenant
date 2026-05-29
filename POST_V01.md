@@ -717,10 +717,51 @@ fuller blast-radius picture — rather than reopening closed items.
 > distinct high-signal framing (per-repo ghost accounts, separate from the
 > org-level people surfaced by `--enumerate-members`), so this lap took it.
 
+### Commit-history secret scanning in validate-token (`--scan-commits`) — ✅ IMPLEMENTED (Phase 2, Rotation 23)
+
+> **Status: shipped.** A read-only `--scan-commits` flag on `validate-token`
+> scans the COMMIT-MESSAGE history of the repos a captured token can reach for
+> leaked credentials, reusing the same `necromancer-patterns` engine that powers
+> `--scan-secrets`. The distinct, high-signal framing: `--scan-secrets`
+> (recon-code) only ever sees the CURRENT file content the code-search API
+> returns, but a credential scrubbed from a tracked file routinely survives
+> verbatim in the commit history — in a `git commit -m "rotate to AKIA..."`
+> subject, a revert/merge body quoting a diff, or an automated bump commit.
+> `--scan-commits` maps that history leak surface. It walks the reachable repos
+> and lists each one's recent commits — GitHub `GET /repos/{owner}/{repo}/commits`,
+> GitLab `GET /api/v4/projects/{id}/repository/commits`, Bitbucket
+> `GET /2.0/repositories/{workspace}/{repo}/commits` — normalizing each commit to
+> `{repo, sha, author, message}`, then feeds the message through
+> `covenant.secrets.scan_fragments`. Only commits whose message actually matched
+> are surfaced, as `{repo, sha, author, secret_findings}`. **The decisive
+> invariants**: secrets are share-safe REDACTED by default (`--show-commit-secrets`
+> opts into the raw value, mirroring recon-code's `--show-secrets`); the commit
+> DIFF/patch is NEVER fetched (covenant maps the leak surface in history without
+> dumping repository content); and the author EMAIL is never surfaced (only the
+> account login / display name — Bitbucket's `raw` "Name <email>" string is
+> deliberately parsed down). Honors `--pattern-set` (validated against the
+> installed library) exactly as recon-code does. **Note on the "git log blob
+> walking" framing from the prior remaining-candidates list:** covenant's defining
+> architecture is purely read-only SCM API recon over httpx (no repo clones, no
+> git operations), so blob-walking the full history would break that discipline
+> and require a fundamentally different mechanism; the commit-MESSAGE surface is
+> the API-native, three-SCM-parity slice of commit-history scanning that fits the
+> architecture and is itself a notorious, distinct leak vector. The walk reuses
+> the shared paginator, scope guardrail and rate-limit backoff, is bounded by
+> `--max-pages`, and composes with every other `--enumerate-*`/`--audit-*` flag.
+> Purely additive: the v0.1 `scopes`/`user`/`admin` fields are untouched and the
+> `commit_findings` array appears only when the flag is set. Tests:
+> `tests/test_scan_commits.py` covers each client's normalized
+> `{repo, sha, author, message}` shape, the no-author-email-leak invariant, e2e
+> detection of the planted AWS key, redaction-by-default vs raw-under-
+> `--show-commit-secrets`, `--pattern-set` validation, composition with the
+> `--enumerate-*` family, the scope-guardrail gate (exit 2), and `--help`
+> documentation. Full suite: 315 passing (301 baseline + 14 new), zero
+> regressions. README updated with a "Commit-history secret scanning" subsection.
+
 **Remaining candidate directions (unimplemented, for future laps):** OAuth-app /
-authorized-application enumeration (note its weak three-SCM parity, above),
-team/sub-group enumeration, and commit-history secret scanning (`git log` blob
-walking beyond code-search fragments).
+authorized-application enumeration (note its weak three-SCM parity, above), and
+team/sub-group enumeration.
 
 ## Follow-on fixes
 

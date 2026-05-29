@@ -1051,6 +1051,74 @@ with standing push access — alongside a read-only auditor):
 }
 ```
 
+### Commit-history secret scanning (`--scan-commits`)
+
+`--scan-secrets` (on `recon-code`) only ever sees the **current** file content the
+code-search API returns. But a credential scrubbed from a tracked file routinely
+**survives verbatim in the commit history** — in a `git commit -m "fix: rotate to
+AKIA..."` subject, in a revert/merge body that quotes a diff, or in an automated
+bump commit that echoes a token. Commit messages are a notorious, overlooked leak
+vector. `--scan-commits` is the recon analogue for that history: pass it to
+`validate-token` and covenant walks the recent commits the token can read on each
+reachable repo, scanning every **commit message** for leaked credentials with the
+same [`necromancer-patterns`](https://github.com/bugsyhewitt/necromancer-patterns)
+engine that powers `--scan-secrets`, and adds a `commit_findings` array.
+
+| SCM       | Commit-list endpoint                                       | `author` derived from                          |
+|-----------|------------------------------------------------------------|------------------------------------------------|
+| GitHub    | `GET /repos/{owner}/{repo}/commits`                        | the commit author's account `login`            |
+| GitLab    | `GET /api/v4/projects/{id}/repository/commits`             | the commit's `author_name`                     |
+| Bitbucket | `GET /2.0/repositories/{workspace}/{repo}/commits`         | the author's display `nickname`                |
+
+Only commits whose message **actually matched** a pattern are surfaced. Each entry
+is normalized to `{"repo", "sha", "author", "secret_findings"}`, where
+`secret_findings` is the standard scan-finding list (same shape as
+`--scan-secrets`). Requires the `scan` extra (`pip install 'covenant[scan]'`), and
+honors `--pattern-set` to narrow the rule bundle (e.g. `aws`) exactly as
+`recon-code` does.
+
+> **Share-safe by default, like `--scan-secrets`.** Each discovered secret is
+> emitted as a **redacted fingerprint** (`AKIA…[20 chars, sha256:…]`) so covenant's
+> own output never becomes a new place the live credential leaks. Pass
+> `--show-commit-secrets` to emit the full raw value (use with care). The commit
+> **diff/patch is never fetched** and **no author email is surfaced** — covenant
+> maps the leak surface in history without dumping repository content.
+
+The walk is bounded by the same `--max-pages` flag and honors the scope guardrail
+and automatic rate-limit retry/backoff. Like the other `--enumerate-*`/`--audit-*`
+flags the feature is purely additive (all may be combined): without the flag the
+output is unchanged, and with it the v0.1 `scopes`/`user`/`admin` fields are
+untouched — only the `commit_findings` array is added.
+
+```bash
+covenant github validate-token \
+  --scope-file scope.txt \
+  --scan-commits \
+  --token-env COVENANT_TOKEN
+```
+
+Example `commit_findings` array (a commit whose message leaked an AWS key, with the
+secret redacted by default):
+
+```json
+{
+  "commit_findings": [
+    {
+      "repo": "acme-corp/spellbook",
+      "sha": "a1b2c3d",
+      "author": "ex-contractor",
+      "secret_findings": [
+        {
+          "rule_id": "aws-access-key-id",
+          "secret": "AKIA…[20 chars, sha256:9f3a]",
+          "fragment_index": 0
+        }
+      ]
+    }
+  ]
+}
+```
+
 ## Usage — one example per SCM
 
 GitHub repo recon:
