@@ -12,6 +12,28 @@ from .base import DEFAULT_MAX_PAGES, BaseSCMClient, SCMError
 _TEXT_MATCH_ACCEPT = "application/vnd.github.text-match+json"
 
 
+def _github_branch_policy(policy: dict | None) -> str:
+    """Map GitHub's ``deployment_branch_policy`` object to a flat label.
+
+    GitHub reports the branch restriction for a deployment environment as a
+    ``{"protected_branches": bool, "custom_branch_policies": bool}`` object, or
+    ``null`` when no policy is configured. ``null`` (or both flags false) means
+    *any* branch may deploy — the weakest posture — which we report as
+    ``"all"``. ``protected_branches`` restricts deployment to the repo's
+    protected branches (``"protected"``); ``custom_branch_policies`` allows a
+    custom allow-list of branch-name patterns (``"custom"``). When both are set
+    we report ``"custom"`` (the more permissive of the two — a custom allow-list
+    can include unprotected patterns).
+    """
+    if not isinstance(policy, dict):
+        return "all"
+    if policy.get("custom_branch_policies"):
+        return "custom"
+    if policy.get("protected_branches"):
+        return "protected"
+    return "all"
+
+
 def _next_link(resp: httpx.Response) -> tuple[str, None] | None:
     """Parse the RFC-5988 ``Link`` header and return the ``rel="next"`` target.
 
@@ -543,6 +565,83 @@ class GitHubClient(BaseSCMClient):
                             "owner": full_name,
                             "name": name,
                             "protected": False,
+                        }
+                    )
+        return results
+
+    def audit_actions_environments(
+        self, max_pages: int = DEFAULT_MAX_PAGES
+    ) -> list[dict]:
+        """Audit the deployment-environment gate posture of reachable repos.
+
+        A *deployment environment* (GitHub Actions "Environments") is where the
+        most sensitive CI/CD secrets live — the production cloud keys, registry
+        passwords and deploy tokens that :meth:`enumerate_actions_secrets` finds
+        scoped per-environment. The environment's *protection rules* are the gate
+        that decides whether a workflow may deploy to it (and thereby read those
+        secrets): a *required-reviewers* rule forces a human to approve the
+        deployment, a *wait timer* delays it, and a *deployment branch policy*
+        restricts which branches may deploy at all.
+
+        The high-signal finding is an environment that protects valuable secrets
+        but gates them weakly: ``required_reviewers=False`` **and** a permissive
+        ``branch_policy`` of ``"all"`` means any branch — including an attacker's
+        feature branch carrying a malicious workflow — can deploy to that
+        environment and exfiltrate its secrets unreviewed. This is the
+        environment-scoped, secret-exfiltration counterpart to
+        :meth:`audit_branch_protection` (which gates code landing on a branch);
+        here we gate *deployments* reaching the secrets.
+
+        Walks the repositories the token can reach (``GET /user/repos``) and, for
+        each, lists ``GET /repos/{owner}/{repo}/environments`` then maps each
+        environment's ``protection_rules`` and ``deployment_branch_policy`` into
+        the normalized
+        ``{"repo", "environment", "required_reviewers",
+        "required_reviewer_count", "wait_timer", "branch_policy"}`` shape.
+        ``branch_policy`` is ``"protected"`` (only protected branches may
+        deploy), ``"custom"`` (a custom allow-list of branch name patterns), or
+        ``"all"`` (no branch restriction — any branch may deploy, the weakest
+        posture). This is read-only — it only GETs policy metadata and never
+        creates, edits, or triggers a deployment.
+        """
+        results: list[dict] = []
+        for full_name in self._reachable_repos(max_pages=max_pages):
+            for resp in self._get_paginated(
+                f"/repos/{full_name}/environments",
+                params={"per_page": 100},
+                max_pages=max_pages,
+                next_request=_next_link,
+            ):
+                body = resp.json()
+                # GitHub wraps environments in {"total_count", "environments"}.
+                if not isinstance(body, dict):
+                    continue
+                for env in body.get("environments", []):
+                    name = env.get("name")
+                    if not name:
+                        continue
+                    required_reviewers = False
+                    required_reviewer_count = 0
+                    wait_timer = 0
+                    for rule in env.get("protection_rules", []):
+                        rule_type = rule.get("type")
+                        if rule_type == "required_reviewers":
+                            required_reviewers = True
+                            required_reviewer_count = len(
+                                rule.get("reviewers", [])
+                            )
+                        elif rule_type == "wait_timer":
+                            wait_timer = int(rule.get("wait_timer", 0) or 0)
+                    results.append(
+                        {
+                            "repo": full_name,
+                            "environment": name,
+                            "required_reviewers": required_reviewers,
+                            "required_reviewer_count": required_reviewer_count,
+                            "wait_timer": wait_timer,
+                            "branch_policy": _github_branch_policy(
+                                env.get("deployment_branch_policy")
+                            ),
                         }
                     )
         return results

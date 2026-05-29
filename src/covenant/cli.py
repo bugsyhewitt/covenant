@@ -383,6 +383,30 @@ def _build_parser() -> argparse.ArgumentParser:
             ),
         )
         token.add_argument(
+            "--audit-actions-environments",
+            action="store_true",
+            default=False,
+            dest="audit_actions_environments",
+            help=(
+                "additionally audit the deployment-environment gate posture of "
+                "the repos this token can reach (GitHub Actions Environments, "
+                "GitLab project environments + protected environments, Bitbucket "
+                "Pipelines deployment environments) via a read-only query; adds "
+                "an 'actions_environments' array of {repo, environment, "
+                "required_reviewers, required_reviewer_count, wait_timer, "
+                "branch_policy} entries. A deployment environment is where the "
+                "most sensitive CI/CD secrets are scoped (production cloud keys, "
+                "deploy tokens); its protection rules are the gate that decides "
+                "whether a workflow may deploy to it and thereby READ those "
+                "secrets. An environment with required_reviewers=false and "
+                "branch_policy='all' lets ANY branch — including an attacker's "
+                "feature branch carrying a malicious workflow — deploy and "
+                "exfiltrate its secrets unreviewed: the environment-scoped, "
+                "secret-exfiltration counterpart to --audit-branch-protection. "
+                "Read-only; never creates, edits, or triggers a deployment."
+            ),
+        )
+        token.add_argument(
             "--audit-repo-visibility",
             action="store_true",
             default=False,
@@ -634,6 +658,17 @@ def main(argv: list[str] | None = None) -> int:
                 payload["actions_secrets"] = client.enumerate_actions_secrets(
                     max_pages=max_pages
                 )
+            # Optional deployment-environment audit. Read-only, additive: the
+            # v0.1 validate-token fields are untouched and the
+            # 'actions_environments' array only appears when
+            # --audit-actions-environments is requested. Reports whether the
+            # reachable repos' deployment environments gate deploys (and thus
+            # access to their environment-scoped secrets) behind required
+            # reviewers / a branch policy; never alters or triggers a deployment.
+            if getattr(args, "audit_actions_environments", False):
+                payload["actions_environments"] = (
+                    client.audit_actions_environments(max_pages=max_pages)
+                )
             # Optional repo-visibility audit. Read-only, additive: the v0.1
             # validate-token fields are untouched and the 'repo_visibility'
             # array only appears when --audit-repo-visibility is requested.
@@ -652,6 +687,7 @@ def main(argv: list[str] | None = None) -> int:
                 or getattr(args, "enumerate_deploy_keys", False)
                 or getattr(args, "audit_branch_protection", False)
                 or getattr(args, "enumerate_actions_secrets", False)
+                or getattr(args, "audit_actions_environments", False)
                 or getattr(args, "audit_repo_visibility", False)
             ) and client.warnings:
                 payload["warnings"] = list(client.warnings)

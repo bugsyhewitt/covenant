@@ -860,6 +860,85 @@ Example `repo_visibility` array (a public repo flagged among private siblings):
 }
 ```
 
+### Deployment-environment audit (`--audit-actions-environments`)
+
+A deployment **environment** (GitHub Actions "Environments", GitLab project
+environments, Bitbucket Pipelines deployment environments) is where the *most*
+sensitive CI/CD secrets are scoped — production cloud keys, registry passwords,
+deploy tokens. The environment's **protection rules** are the gate that decides
+whether a workflow may deploy to it and thereby *read* those secrets:
+required-reviewers force a human to approve the deployment, a wait timer delays
+it, and a deployment branch policy restricts which branches may deploy at all.
+
+`--audit-actions-environments` is the **environment-scoped, secret-exfiltration
+counterpart** to `--audit-branch-protection`: where branch protection gates code
+landing on a branch, this gates *deployments* reaching the secrets. The
+high-signal finding is an environment with `required_reviewers: false` **and** a
+permissive `branch_policy` of `"all"` — any branch (including an attacker's
+feature branch carrying a malicious workflow) can deploy to that environment and
+exfiltrate its secrets unreviewed. Pass `--audit-actions-environments` to
+`validate-token` and covenant walks the repos the token can reach with a
+**read-only** query, adding an `actions_environments` array:
+
+| SCM       | Endpoint(s)                                                                                   | Gate signal mapped to `required_reviewers`                          |
+|-----------|-----------------------------------------------------------------------------------------------|----------------------------------------------------------------------|
+| GitHub    | `GET /repos/{owner}/{repo}/environments`                                                      | a `required_reviewers` protection rule (with `wait_timer` + branch policy) |
+| GitLab    | `GET /api/v4/projects/{id}/environments` + `.../protected_environments`                       | a protected environment with `required_approval_count > 0`           |
+| Bitbucket | `GET /2.0/repositories/{full_name}/environments`                                              | the deploy gate's `restrictions.admin_only` flag                     |
+
+Each entry is normalized to `{"repo", "environment", "required_reviewers",
+"required_reviewer_count", "wait_timer", "branch_policy"}`. `branch_policy` is
+`"protected"` (only protected branches may deploy), `"custom"` (a custom branch
+allow-list), or `"all"` (no branch restriction — the weakest posture).
+
+> **Provider parity caveats.** GitLab has no per-environment deploy *wait timer*,
+> so `wait_timer` is always `0` there. Bitbucket Cloud exposes no
+> per-environment reviewer *count*, wait timer, or branch policy, so
+> `required_reviewer_count`/`wait_timer` are `0` and `branch_policy` is `"all"`
+> on Bitbucket — the fields are kept for cross-provider shape parity, and
+> `required_reviewers` reflects the `admin_only` deploy gate.
+
+Only policy metadata is read — covenant never creates, edits, or triggers a
+deployment, and no secret *value* is ever read. The walk is bounded by the same
+`--max-pages` flag and honors the scope guardrail and automatic rate-limit
+retry/backoff. Like the other `--enumerate-*`/`--audit-*` flags the feature is
+purely additive (all may be combined): without the flag the output is unchanged,
+and with it the v0.1 `scopes`/`user`/`admin` fields are untouched — only the
+`actions_environments` array is added.
+
+```bash
+covenant github validate-token \
+  --scope-file scope.txt \
+  --audit-actions-environments \
+  --token-env COVENANT_TOKEN
+```
+
+Example `actions_environments` array (a weakly-gated production environment
+beside a strongly-gated one):
+
+```json
+{
+  "actions_environments": [
+    {
+      "repo": "acme-corp/spellbook",
+      "environment": "production",
+      "required_reviewers": false,
+      "required_reviewer_count": 0,
+      "wait_timer": 0,
+      "branch_policy": "all"
+    },
+    {
+      "repo": "acme-corp/grimoire",
+      "environment": "production",
+      "required_reviewers": true,
+      "required_reviewer_count": 2,
+      "wait_timer": 30,
+      "branch_policy": "protected"
+    }
+  ]
+}
+```
+
 ## Usage — one example per SCM
 
 GitHub repo recon:
