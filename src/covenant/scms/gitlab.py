@@ -25,6 +25,25 @@ def _gpg_fingerprint(armor: str | None) -> str | None:
     return collapsed[:64] or None
 
 
+def _gitlab_access_role(access_level: int) -> str:
+    """Map a GitLab numeric ``access_level`` to covenant's role vocabulary.
+
+    GitLab grades access numerically (50 Owner, 40 Maintainer, 30 Developer,
+    20 Reporter, 10 Guest); we collapse it to the same labels the GitHub
+    collaborator audit uses so the cross-SCM output is uniform: >=50 ``admin``,
+    40 ``maintain``, 30 ``write``, 20 ``triage``, anything lower ``read``.
+    """
+    if access_level >= 50:
+        return "admin"
+    if access_level >= 40:
+        return "maintain"
+    if access_level >= 30:
+        return "write"
+    if access_level >= 20:
+        return "triage"
+    return "read"
+
+
 def _group_id(group: str) -> str:
     """URL-encode a GitLab group path for use as a path-id segment.
 
@@ -902,6 +921,68 @@ class GitLabClient(BaseSCMClient):
                             "owner": owner,
                             "username": username,
                             "role": "admin" if access_level >= 50 else "member",
+                        }
+                    )
+        return results
+
+    def enumerate_collaborators(
+        self, max_pages: int = DEFAULT_MAX_PAGES
+    ) -> list[dict]:
+        """List the direct members of the projects this token can reach (ghost accounts).
+
+        The GitLab analogue of GitHub outside-collaborator enumeration. Where
+        :meth:`enumerate_members` maps the people who share a *group's* reach,
+        this is project-scoped and surfaces the higher-signal blast radius: the
+        accounts granted access DIRECTLY on a specific project rather than
+        inherited from an ancestor group. A direct project member is GitLab's
+        outside-collaborator equivalent — a personal account bolted onto one repo
+        (often a contractor or ex-employee) that an org/group-member audit misses
+        and that survives long after the person leaves. A project with a
+        write-or-above direct member is a supply-chain and persistence risk.
+
+        Walks the projects the token is a member of
+        (``GET /api/v4/projects?membership=true``) and, for each, lists its
+        DIRECT members (``GET /api/v4/projects/{id}/members`` — the non-``/all``
+        endpoint, which returns members granted on the project itself, excluding
+        those inherited from a group). GitLab reports each member's numeric
+        ``access_level`` (50 = Owner, 40 = Maintainer, 30 = Developer, 20 =
+        Reporter, 10 = Guest); we map it to the same role vocabulary as the
+        GitHub collaborator audit (>=50 ``admin``, 40 ``maintain``, 30 ``write``,
+        20 ``triage``, else ``read``). Every returned account is a direct
+        (outside-style) grant, so ``outside`` is ``True``. Returns a normalized
+        list of ``{"repo", "username", "role", "outside"}`` dicts. Only
+        membership identity and the access level are surfaced — never an email,
+        key, or credential. Read-only.
+        """
+        results: list[dict] = []
+        for project in self._reachable_projects(max_pages=max_pages):
+            project_id = project["id"]
+            repo = project["repo"]
+            path = f"/api/v4/projects/{project_id}/members"
+            params = {"per_page": _PER_PAGE, "page": 1}
+            for resp in self._get_paginated(
+                path,
+                params=params,
+                max_pages=max_pages,
+                next_request=_gitlab_next(path, params),
+            ):
+                body = resp.json()
+                if not isinstance(body, list):
+                    continue
+                for item in body:
+                    username = item.get("username")
+                    if not username:
+                        continue
+                    try:
+                        access_level = int(item.get("access_level", 0) or 0)
+                    except (TypeError, ValueError):
+                        access_level = 0
+                    results.append(
+                        {
+                            "repo": repo,
+                            "username": username,
+                            "role": _gitlab_access_role(access_level),
+                            "outside": True,
                         }
                     )
         return results

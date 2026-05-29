@@ -462,6 +462,51 @@ class _GitHubHandler(BaseHTTPRequestHandler):
                         ],
                     },
                 )
+        elif parsed.path.startswith("/repos/") and parsed.path.endswith(
+            "/collaborators"
+        ):
+            # Per-repo collaborator enumeration (--enumerate-collaborators).
+            # covenant requests affiliation=outside, so every returned account
+            # is an OUTSIDE collaborator (ghost-account / ex-employee vector).
+            # The spellbook outside collaborator has WRITE (push) access — the
+            # high-signal case; grimoire's has read-only (pull). Only public
+            # identity + the permissions map is returned, never an email/key.
+            repo = "/".join(parsed.path.split("/")[2:4])
+            writable = repo.endswith("/spellbook")
+            if writable:
+                self._json(
+                    200,
+                    [
+                        {
+                            "login": "ex-contractor",
+                            "role_name": "write",
+                            "permissions": {
+                                "admin": False,
+                                "maintain": False,
+                                "push": True,
+                                "triage": True,
+                                "pull": True,
+                            },
+                        },
+                    ],
+                )
+            else:
+                self._json(
+                    200,
+                    [
+                        {
+                            "login": "auditor",
+                            "role_name": "read",
+                            "permissions": {
+                                "admin": False,
+                                "maintain": False,
+                                "push": False,
+                                "triage": False,
+                                "pull": True,
+                            },
+                        },
+                    ],
+                )
         elif parsed.path.startswith("/orgs/") and parsed.path.endswith(
             "/members"
         ):
@@ -807,6 +852,22 @@ class _GitLabHandler(BaseHTTPRequestHandler):
                 [
                     {"id": 1, "name": "production"},
                     {"id": 2, "name": "staging"},
+                ],
+                headers={"X-Page": "1", "X-Next-Page": "", "X-Total-Pages": "1"},
+            )
+        elif parsed.path.startswith("/api/v4/projects/") and parsed.path.endswith(
+            "/members"
+        ):
+            # Per-project DIRECT member enumeration (--enumerate-collaborators).
+            # The non-/all endpoint returns members granted on the project
+            # itself (GitLab's outside-collaborator analogue). access_level 30
+            # (Developer) -> write; covenant flags every entry outside=true.
+            # Only membership identity + access level — no token/key/email.
+            self._json(
+                200,
+                [
+                    {"username": "ex-contractor", "access_level": 30},
+                    {"username": "auditor", "access_level": 10},
                 ],
                 headers={"X-Page": "1", "X-Next-Page": "", "X-Total-Pages": "1"},
             )
@@ -1178,6 +1239,27 @@ class _BitbucketHandler(BaseHTTPRequestHandler):
                         },
                     ],
                     "size": 2,
+                },
+            )
+        elif parsed.path.startswith("/2.0/repositories/") and parsed.path.endswith(
+            "/permissions-config/users"
+        ):
+            # Per-repo explicit user-permission enumeration
+            # (--enumerate-collaborators). Bitbucket grades access as
+            # admin/write/read; covenant surfaces it verbatim as `role` and
+            # flags every entry outside=true. This grant has WRITE access — the
+            # high-signal ghost-account case. Only identity + permission — no
+            # token/key/email.
+            self._json(
+                200,
+                {
+                    "values": [
+                        {
+                            "user": {"nickname": "ex-contractor"},
+                            "permission": "write",
+                        },
+                    ],
+                    "size": 1,
                 },
             )
         elif parsed.path.startswith("/2.0/workspaces/") and parsed.path.endswith(

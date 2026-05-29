@@ -992,6 +992,65 @@ the highest-value lateral target):
 }
 ```
 
+### Collaborator enumeration (`--enumerate-collaborators`)
+
+Where `--enumerate-members` maps the people who share an **org/group/workspace's**
+reach, `--enumerate-collaborators` is **repo-scoped** and surfaces the
+higher-signal blast radius: the accounts granted access **directly on a specific
+repository** rather than through org membership. These direct grants are the
+classic **ghost-account / ex-employee / leftover-contractor vector** — a personal
+account with standing access to a critical repo, invisible to an org-member audit,
+that survives long after the person leaves. A write-or-above direct grant is a
+direct **supply-chain and persistence** risk. Pass `--enumerate-collaborators` to
+`validate-token` and covenant walks the repos the token can reach and, for each,
+lists its per-repo grants with a **read-only** query, adding a `collaborators`
+array:
+
+| SCM       | Endpoint                                                          | `role` / `outside` derived from                                  |
+|-----------|------------------------------------------------------------------|------------------------------------------------------------------|
+| GitHub    | `GET /repos/{owner}/{repo}/collaborators?affiliation=outside`     | the `permissions` map; every result is an outside collaborator   |
+| GitLab    | `GET /api/v4/projects/{id}/members` (direct, non-`/all`)          | the numeric `access_level`; direct project members               |
+| Bitbucket | `GET /2.0/repositories/{workspace}/{repo}/permissions-config/users`| the explicit `permission` (`admin`/`write`/`read`)               |
+
+Each entry is normalized to `{"repo", "username", "role", "outside"}`, where
+`role` is the **highest-privilege** level (`admin` > `maintain` > `write` >
+`triage` > `read`) and `outside` is `true` for these direct, outside-style grants
+(the ghost-account signal). GitHub fetches with `affiliation=outside` so the result
+set *is* the outside collaborators; GitLab's non-`/all` members endpoint returns
+grants made on the project itself (excluding those inherited from a group); and
+Bitbucket's explicit per-repo user-permission config is the equivalent direct
+grant. Endpoints that require repo-admin (Bitbucket) **fail soft** for a
+low-privilege token so the audit still reports the repos it can read.
+
+> **Identity and permission level only — never a credential.** covenant surfaces
+> the collaborator's username and access level; it never reads or echoes an email,
+> SSH/GPG key, or any token, and the audit never grants or revokes access.
+
+The walk is bounded by the same `--max-pages` flag and honors the scope guardrail
+and automatic rate-limit retry/backoff. Like the other `--enumerate-*`/`--audit-*`
+flags the feature is purely additive (all may be combined): without the flag the
+output is unchanged, and with it the v0.1 `scopes`/`user`/`admin` fields are
+untouched — only the `collaborators` array is added.
+
+```bash
+covenant github validate-token \
+  --scope-file scope.txt \
+  --enumerate-collaborators \
+  --token-env COVENANT_TOKEN
+```
+
+Example `collaborators` array (a writable outside collaborator — a ghost account
+with standing push access — alongside a read-only auditor):
+
+```json
+{
+  "collaborators": [
+    { "repo": "acme-corp/spellbook", "username": "ex-contractor", "role": "write", "outside": true },
+    { "repo": "acme-corp/grimoire",  "username": "auditor",       "role": "read",  "outside": true }
+  ]
+}
+```
+
 ## Usage — one example per SCM
 
 GitHub repo recon:
