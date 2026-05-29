@@ -447,6 +447,71 @@ class _GitHubHandler(BaseHTTPRequestHandler):
                     ],
                 },
             )
+        elif parsed.path.startswith("/orgs/") and parsed.path.endswith(
+            "/actions/runners"
+        ):
+            # Org-level self-hosted runner enumeration
+            # (--enumerate-runners). GitHub wraps runners in
+            # {"total_count", "runners": [...]}. The API by definition lists
+            # only self-hosted runners. The "shouldnotappear" placeholder
+            # would never appear here in real responses (no secret-bearing
+            # field), but we plant a no-credential-leak invariant elsewhere.
+            self._json(
+                200,
+                {
+                    "total_count": 2,
+                    "runners": [
+                        {
+                            "id": 700,
+                            "name": "acme-org-runner-1",
+                            "os": "linux",
+                            "status": "online",
+                            "labels": [
+                                {"id": 1, "name": "self-hosted", "type": "read-only"},
+                                {"id": 2, "name": "linux", "type": "read-only"},
+                                {"id": 3, "name": "production", "type": "custom"},
+                            ],
+                        },
+                        {
+                            "id": 701,
+                            "name": "acme-org-runner-2",
+                            "os": "linux",
+                            "status": "offline",
+                            "labels": [
+                                {"id": 1, "name": "self-hosted", "type": "read-only"},
+                                {"id": 2, "name": "linux", "type": "read-only"},
+                            ],
+                        },
+                    ],
+                },
+            )
+        elif parsed.path.startswith("/repos/") and parsed.path.endswith(
+            "/actions/runners"
+        ):
+            # Repo-level self-hosted runner enumeration
+            # (--enumerate-runners). Repo-attached runners. Names + metadata
+            # only; no registration token.
+            repo = "/".join(parsed.path.split("/")[2:4])
+            if repo.endswith("/spellbook"):
+                self._json(
+                    200,
+                    {
+                        "total_count": 1,
+                        "runners": [
+                            {
+                                "id": 710,
+                                "name": "spellbook-repo-runner",
+                                "os": "linux",
+                                "status": "online",
+                                "labels": [
+                                    {"id": 1, "name": "self-hosted", "type": "read-only"},
+                                ],
+                            },
+                        ],
+                    },
+                )
+            else:
+                self._json(200, {"total_count": 0, "runners": []})
         elif parsed.path.startswith("/repos/") and parsed.path.endswith(
             "/environments"
         ):
@@ -1112,6 +1177,55 @@ class _GitLabHandler(BaseHTTPRequestHandler):
                 ],
                 headers={"X-Page": "1", "X-Next-Page": "", "X-Total-Pages": "1"},
             )
+        elif parsed.path.startswith("/api/v4/groups/") and parsed.path.endswith(
+            "/runners"
+        ):
+            # Group-level self-hosted runner enumeration (--enumerate-runners).
+            # GitLab returns a flat list of runners with runner_type,
+            # is_shared, and tag_list. One runner is the platform-managed SaaS
+            # shared runner (is_shared true -> self_hosted false); one is a
+            # group-attached self-hosted runner.
+            self._json(
+                200,
+                [
+                    {
+                        "id": 800,
+                        "description": "acme-group-runner",
+                        "runner_type": "group_type",
+                        "status": "online",
+                        "is_shared": False,
+                        "tag_list": ["self-hosted", "linux"],
+                    },
+                    {
+                        "id": 801,
+                        "description": "shared-saas-runner",
+                        "runner_type": "instance_type",
+                        "status": "online",
+                        "is_shared": True,
+                        "tag_list": ["saas-linux-small"],
+                    },
+                ],
+                headers={"X-Page": "1", "X-Next-Page": "", "X-Total-Pages": "1"},
+            )
+        elif parsed.path.startswith("/api/v4/projects/") and parsed.path.endswith(
+            "/runners"
+        ):
+            # Project-level self-hosted runner enumeration
+            # (--enumerate-runners). One project-attached runner.
+            self._json(
+                200,
+                [
+                    {
+                        "id": 810,
+                        "description": "spellbook-project-runner",
+                        "runner_type": "project_type",
+                        "status": "online",
+                        "is_shared": False,
+                        "tag_list": ["self-hosted", "deploy"],
+                    },
+                ],
+                headers={"X-Page": "1", "X-Next-Page": "", "X-Total-Pages": "1"},
+            )
         elif parsed.path.startswith("/api/v4/projects/") and parsed.path.endswith(
             "/protected_environments"
         ):
@@ -1672,6 +1786,50 @@ class _BitbucketHandler(BaseHTTPRequestHandler):
                             "key": "DEPLOY_TOKEN",
                             "value": "shouldnotappear",
                             "secured": False,
+                        },
+                    ],
+                    "size": 1,
+                },
+            )
+        elif parsed.path.startswith("/2.0/workspaces/") and parsed.path.endswith(
+            "/pipelines-config/runners"
+        ):
+            # Workspace-level self-hosted runner enumeration
+            # (--enumerate-runners). Bitbucket Pipelines runners are
+            # self-hosted by design. The OAuth client secret is never echoed.
+            self._json(
+                200,
+                {
+                    "values": [
+                        {
+                            "uuid": "{runner-ws-1}",
+                            "name": "acme-workspace-runner",
+                            "labels": ["self.hosted", "linux"],
+                            "state": {"status": "ONLINE"},
+                        },
+                        {
+                            "uuid": "{runner-ws-2}",
+                            "name": "acme-workspace-runner-2",
+                            "labels": ["self.hosted", "macos"],
+                            "state": {"status": "OFFLINE"},
+                        },
+                    ],
+                    "size": 2,
+                },
+            )
+        elif parsed.path.startswith("/2.0/repositories/") and parsed.path.endswith(
+            "/pipelines-config/runners"
+        ):
+            # Repo-level self-hosted runner enumeration (--enumerate-runners).
+            self._json(
+                200,
+                {
+                    "values": [
+                        {
+                            "uuid": "{runner-repo-1}",
+                            "name": "spellbook-repo-runner",
+                            "labels": ["self.hosted", "linux", "deploy"],
+                            "state": {"status": "ONLINE"},
                         },
                     ],
                     "size": 1,

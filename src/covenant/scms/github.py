@@ -92,6 +92,25 @@ def _next_link(resp: httpx.Response) -> tuple[str, None] | None:
     return None
 
 
+def _runner_labels(labels: list) -> list[str]:
+    """Reduce a GitHub Actions runner's ``labels`` array to bare label names.
+
+    GitHub returns each label as ``{"id", "name", "type": "read-only"|"custom"}``;
+    we surface only the human-readable ``name`` (the workflow-targeting signal)
+    and drop the numeric id and admin metadata. Defensive against missing/
+    malformed entries.
+    """
+    out: list[str] = []
+    for label in labels:
+        if isinstance(label, dict):
+            name = label.get("name")
+            if isinstance(name, str) and name:
+                out.append(name)
+        elif isinstance(label, str) and label:
+            out.append(label)
+    return out
+
+
 class GitHubClient(BaseSCMClient):
     default_base_url = "https://api.github.com"
 
@@ -597,6 +616,107 @@ class GitHubClient(BaseSCMClient):
                             "owner": full_name,
                             "name": name,
                             "protected": False,
+                        }
+                    )
+        return results
+
+    def enumerate_runners(
+        self, max_pages: int = DEFAULT_MAX_PAGES
+    ) -> list[dict]:
+        """List the self-hosted GitHub Actions runners this token can reach.
+
+        A *self-hosted runner* is an attacker-relevant blast-radius signal
+        distinct from the credential and key surfaces the other ``--enumerate-*``
+        flags map. Every job that targets a runner executes on that runner's
+        host: the runner sees the run's ``GITHUB_TOKEN``, every secret the
+        workflow consumes, the checked-out source and the build artifacts. A
+        compromised, planted, or unhardened self-hosted runner is therefore a
+        **persistence and lateral-movement foothold** — once an attacker can
+        place a job onto it, every subsequent job on that runner is also
+        compromised. A runner registered at *org* scope is the broadest, because
+        any repo in the org can dispatch to it.
+
+        This walks both axes the token can reach:
+
+        * **org-level** runners — ``GET /orgs/{org}/actions/runners`` for each
+          org from :meth:`enumerate_orgs` (``scope="org"``);
+        * **repo-level** runners — ``GET /repos/{owner}/{repo}/actions/runners``
+          for each repo from :meth:`_reachable_repos` (``scope="repo"``).
+
+        Returns a normalized list of
+        ``{"scope", "owner", "id", "name", "labels", "self_hosted"}`` dicts.
+        The GitHub Actions runners API by definition lists only **self-hosted**
+        runners (GitHub-hosted runners are managed and never appear), so
+        ``self_hosted`` is always ``True`` for GitHub entries. ``labels`` is the
+        list of label names a workflow may target the runner with. Read-only;
+        only runner identity and labels are surfaced — never a registration
+        token or any credential. Endpoints a low-privilege token can't read fail
+        soft to an empty result so the audit still reports what it can see.
+        """
+        results: list[dict] = []
+        for org in self.enumerate_orgs(max_pages=max_pages):
+            owner = org.get("name")
+            if not owner:
+                continue
+            try:
+                pages = list(
+                    self._get_paginated(
+                        f"/orgs/{owner}/actions/runners",
+                        params={"per_page": 100},
+                        max_pages=max_pages,
+                        next_request=_next_link,
+                    )
+                )
+            except SCMError:
+                continue
+            for resp in pages:
+                body = resp.json()
+                if not isinstance(body, dict):
+                    continue
+                for item in body.get("runners", []):
+                    runner_id = item.get("id")
+                    name = item.get("name")
+                    if runner_id is None or not name:
+                        continue
+                    results.append(
+                        {
+                            "scope": "org",
+                            "owner": owner,
+                            "id": runner_id,
+                            "name": name,
+                            "labels": _runner_labels(item.get("labels", [])),
+                            "self_hosted": True,
+                        }
+                    )
+        for full_name in self._reachable_repos(max_pages=max_pages):
+            try:
+                pages = list(
+                    self._get_paginated(
+                        f"/repos/{full_name}/actions/runners",
+                        params={"per_page": 100},
+                        max_pages=max_pages,
+                        next_request=_next_link,
+                    )
+                )
+            except SCMError:
+                continue
+            for resp in pages:
+                body = resp.json()
+                if not isinstance(body, dict):
+                    continue
+                for item in body.get("runners", []):
+                    runner_id = item.get("id")
+                    name = item.get("name")
+                    if runner_id is None or not name:
+                        continue
+                    results.append(
+                        {
+                            "scope": "repo",
+                            "owner": full_name,
+                            "id": runner_id,
+                            "name": name,
+                            "labels": _runner_labels(item.get("labels", [])),
+                            "self_hosted": True,
                         }
                     )
         return results

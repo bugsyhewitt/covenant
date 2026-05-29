@@ -34,6 +34,27 @@ def _bitbucket_next(resp: httpx.Response) -> tuple[str, None] | None:
     return (next_url, None)
 
 
+def _bitbucket_runner_labels(labels) -> list[str]:
+    """Normalize a Bitbucket runner's ``labels`` field to a list of bare names.
+
+    Bitbucket Cloud returns labels either as a flat list of strings
+    (``["self.hosted","linux"]``) or, in some payloads, as a set-style list of
+    label dicts; we accept either and emit a stable list of strings. Defensive
+    against missing/malformed entries.
+    """
+    out: list[str] = []
+    if not labels:
+        return out
+    for label in labels:
+        if isinstance(label, str) and label:
+            out.append(label)
+        elif isinstance(label, dict):
+            name = label.get("name")
+            if isinstance(name, str) and name:
+                out.append(name)
+    return out
+
+
 class BitbucketClient(BaseSCMClient):
     default_base_url = "https://api.bitbucket.org"
 
@@ -542,6 +563,99 @@ class BitbucketClient(BaseSCMClient):
                             "owner": full_name,
                             "name": key,
                             "protected": bool(item.get("secured", False)),
+                        }
+                    )
+        return results
+
+    def enumerate_runners(
+        self, max_pages: int = DEFAULT_MAX_PAGES
+    ) -> list[dict]:
+        """List the self-hosted Bitbucket Pipelines runners this token can reach.
+
+        Bitbucket Cloud's analogue of a GitHub Actions self-hosted runner is a
+        *Pipelines runner* attached to a workspace or repository (``GET
+        /2.0/workspaces/{slug}/pipelines-config/runners`` and ``GET
+        /2.0/repositories/{full_name}/pipelines-config/runners``). Every job
+        that targets the runner executes on its host: the runner sees the job's
+        Pipelines variables, the checked-out source and the build artifacts, so
+        a compromised or planted self-hosted runner is a persistence and
+        lateral-movement foothold. A runner registered at *workspace* scope is
+        the broadest, because any repo in the workspace can dispatch to it.
+
+        Walks the workspaces from :meth:`enumerate_orgs` (``scope="org"``) and
+        the repos from :meth:`_reachable_repos` (``scope="repo"``), returning
+        the same normalized
+        ``{"scope", "owner", "id", "name", "labels", "self_hosted"}`` shape as
+        the other SCMs. Bitbucket Pipelines runners are self-hosted by
+        definition (the platform-managed compute is not surfaced here), so
+        ``self_hosted`` is always ``True`` for Bitbucket entries. ``id`` is the
+        runner UUID; ``labels`` is the Bitbucket label list (e.g.
+        ``["self.hosted","linux"]``). Endpoints a token can't read fail soft to
+        an empty result. Read-only; the runner *OAuth client secret* is never
+        echoed.
+        """
+        results: list[dict] = []
+        for workspace in self.enumerate_orgs(max_pages=max_pages):
+            owner = workspace.get("name")
+            if not owner:
+                continue
+            try:
+                pages = list(
+                    self._get_paginated(
+                        f"/2.0/workspaces/{owner}/pipelines-config/runners",
+                        params={"pagelen": 100},
+                        max_pages=max_pages,
+                        next_request=_bitbucket_next,
+                    )
+                )
+            except SCMError:
+                continue
+            for resp in pages:
+                for item in resp.json().get("values", []):
+                    runner_uuid = item.get("uuid")
+                    name = item.get("name")
+                    if not runner_uuid or not name:
+                        continue
+                    results.append(
+                        {
+                            "scope": "org",
+                            "owner": owner,
+                            "id": runner_uuid,
+                            "name": name,
+                            "labels": _bitbucket_runner_labels(
+                                item.get("labels", [])
+                            ),
+                            "self_hosted": True,
+                        }
+                    )
+        for full_name in self._reachable_repos(max_pages=max_pages):
+            try:
+                pages = list(
+                    self._get_paginated(
+                        f"/2.0/repositories/{full_name}/pipelines-config/runners",
+                        params={"pagelen": 100},
+                        max_pages=max_pages,
+                        next_request=_bitbucket_next,
+                    )
+                )
+            except SCMError:
+                continue
+            for resp in pages:
+                for item in resp.json().get("values", []):
+                    runner_uuid = item.get("uuid")
+                    name = item.get("name")
+                    if not runner_uuid or not name:
+                        continue
+                    results.append(
+                        {
+                            "scope": "repo",
+                            "owner": full_name,
+                            "id": runner_uuid,
+                            "name": name,
+                            "labels": _bitbucket_runner_labels(
+                                item.get("labels", [])
+                            ),
+                            "self_hosted": True,
                         }
                     )
         return results

@@ -383,6 +383,34 @@ def _build_parser() -> argparse.ArgumentParser:
             ),
         )
         token.add_argument(
+            "--enumerate-runners",
+            action="store_true",
+            default=False,
+            dest="enumerate_runners",
+            help=(
+                "additionally list the SELF-HOSTED pipeline runners this token "
+                "can reach (GitHub Actions org/repo self-hosted runners, GitLab "
+                "group/project runners, Bitbucket workspace/repo Pipelines "
+                "runners) via a read-only query; adds a 'runners' array of "
+                "{scope, owner, id, name, labels, self_hosted} entries. A "
+                "self-hosted runner is a distinct, high-signal blast-radius "
+                "surface: every job that targets it executes on its host and "
+                "sees that run's GITHUB_TOKEN / CI variables / checked-out "
+                "source — so a compromised or planted self-hosted runner is a "
+                "persistence and lateral-movement foothold, and a runner "
+                "registered at ORG/group/workspace scope is the broadest "
+                "(every repo in the org can dispatch to it). GitHub Actions and "
+                "Bitbucket Pipelines list only self-hosted runners by design, so "
+                "'self_hosted' is True there; for GitLab it is False on the "
+                "platform-managed shared SaaS runners (is_shared=true) and True "
+                "on attached runners running on infrastructure the org operates. "
+                "Endpoints a low-privilege token can't read fail soft to an "
+                "empty result rather than failing the whole audit. Only runner "
+                "identity and labels are surfaced — never a registration token, "
+                "OAuth client secret, or any credential."
+            ),
+        )
+        token.add_argument(
             "--audit-actions-environments",
             action="store_true",
             default=False,
@@ -940,6 +968,19 @@ def main(argv: list[str] | None = None) -> int:
                 payload["actions_secrets"] = client.enumerate_actions_secrets(
                     max_pages=max_pages
                 )
+            # Optional self-hosted runner enumeration. Read-only, additive: the
+            # v0.1 validate-token fields are untouched and the 'runners' array
+            # only appears when --enumerate-runners is requested. Maps the
+            # pipeline-execution-host blast radius (org/group/workspace and
+            # repo/project self-hosted runners) — every job dispatched to a
+            # runner runs on its host and sees the run's secrets, so a
+            # compromised runner is a persistence/lateral-movement foothold.
+            # Only runner identity + labels are surfaced, never a registration
+            # token or OAuth client secret.
+            if getattr(args, "enumerate_runners", False):
+                payload["runners"] = client.enumerate_runners(
+                    max_pages=max_pages
+                )
             # Optional deployment-environment audit. Read-only, additive: the
             # v0.1 validate-token fields are untouched and the
             # 'actions_environments' array only appears when
@@ -1127,6 +1168,7 @@ def main(argv: list[str] | None = None) -> int:
                 or getattr(args, "enumerate_deploy_keys", False)
                 or getattr(args, "audit_branch_protection", False)
                 or getattr(args, "enumerate_actions_secrets", False)
+                or getattr(args, "enumerate_runners", False)
                 or getattr(args, "audit_actions_environments", False)
                 or getattr(args, "audit_repo_visibility", False)
                 or getattr(args, "audit_codeowners", False)

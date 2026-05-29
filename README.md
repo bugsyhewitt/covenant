@@ -1278,6 +1278,89 @@ Example `actions_permissions` array (a write-token repo and a disabled repo):
 }
 ```
 
+### Self-hosted runner enumeration (`--enumerate-runners`)
+
+Where `--enumerate-actions-secrets` maps the *credential* surface that powers a
+build pipeline, `--enumerate-runners` maps the **execution-host** surface: the
+self-hosted machines those pipelines actually run on. Every job dispatched to a
+runner executes on the runner's host and sees that run's `GITHUB_TOKEN` (or
+GitLab CI job token, or Bitbucket Pipelines variables), the checked-out source,
+and the build artifacts. A compromised, planted, or unhardened self-hosted
+runner is therefore a **persistence and lateral-movement foothold** — once an
+attacker can place a job onto it, every subsequent job is also exposed — and a
+runner registered at **org / group / workspace scope** is the broadest, because
+any repo in the org can dispatch to it.
+
+Pass `--enumerate-runners` to `validate-token` and covenant walks both axes the
+token can reach with a **read-only** query, adding a `runners` array:
+
+| SCM       | Org/group/workspace-level (scope `org`)                          | Repo/project-level (scope `repo`)                                |
+|-----------|------------------------------------------------------------------|------------------------------------------------------------------|
+| GitHub    | `GET /orgs/{org}/actions/runners`                                | `GET /repos/{owner}/{repo}/actions/runners`                      |
+| GitLab    | `GET /api/v4/groups/{id}/runners`                                | `GET /api/v4/projects/{id}/runners`                              |
+| Bitbucket | `GET /2.0/workspaces/{slug}/pipelines-config/runners`            | `GET /2.0/repositories/{full_name}/pipelines-config/runners`     |
+
+Each entry is normalized to
+`{"scope", "owner", "id", "name", "labels", "self_hosted"}`. `labels` is the
+list of label names a workflow may target the runner with (GitHub's
+`{id, name, type}` label objects are reduced to bare names; GitLab's `tag_list`
+and Bitbucket's flat label list are surfaced verbatim).
+
+> **`self_hosted` is the decisive distinction.** The GitHub Actions and
+> Bitbucket Pipelines runner endpoints list **only self-hosted runners by
+> design** — platform-managed runners do not appear — so `self_hosted` is
+> always `true` on those providers. GitLab lists *every* runner reachable from
+> the group/project, **including** the platform-managed shared SaaS runners
+> (`is_shared: true`); covenant maps those to `self_hosted: false` so an
+> operator can tell the org-controlled infrastructure apart from the
+> shared compute it does not operate.
+
+> **Only runner identity and labels are surfaced — never a credential.** The
+> runner *registration token*, GitHub Actions runner *removal token*, and
+> Bitbucket Pipelines runner *OAuth client secret* are all read-only invisible
+> to covenant. Endpoints a low-privilege token can't read fail soft to an empty
+> result rather than failing the whole audit.
+
+The walk is bounded by the same `--max-pages` flag and honors the scope
+guardrail and automatic rate-limit retry/backoff. Like the other
+`--enumerate-*`/`--audit-*` flags the feature is purely additive (all may be
+combined): without the flag the output is unchanged, and with it the v0.1
+`scopes`/`user`/`admin` fields are untouched — only the `runners` array is
+added.
+
+```bash
+covenant github validate-token \
+  --scope-file scope.txt \
+  --enumerate-runners \
+  --token-env COVENANT_TOKEN
+```
+
+Example `runners` array (an org-scoped self-hosted runner alongside a
+repo-attached one):
+
+```json
+{
+  "runners": [
+    {
+      "scope": "org",
+      "owner": "acme-corp",
+      "id": 700,
+      "name": "acme-org-runner-1",
+      "labels": ["self-hosted", "linux", "production"],
+      "self_hosted": true
+    },
+    {
+      "scope": "repo",
+      "owner": "acme-corp/spellbook",
+      "id": 710,
+      "name": "spellbook-repo-runner",
+      "labels": ["self-hosted"],
+      "self_hosted": true
+    }
+  ]
+}
+```
+
 ### Deployment-environment audit (`--audit-actions-environments`)
 
 A deployment **environment** (GitHub Actions "Environments", GitLab project
