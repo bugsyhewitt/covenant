@@ -1172,6 +1172,120 @@ class GitHubClient(BaseSCMClient):
                 )
         return records
 
+    def audit_actions_permissions(
+        self, max_pages: int = DEFAULT_MAX_PAGES
+    ) -> list[dict]:
+        """Audit the GitHub Actions execution-permission posture of reachable repos.
+
+        Where :meth:`audit_actions_environments` gates which *deployments* may
+        reach an environment's secrets, this audits the policy that decides what
+        a workflow run is *allowed to do in the first place*: whether Actions is
+        enabled on the repo at all, which actions it may invoke, and — the
+        decisive supply-chain field — the **default permissions of the
+        automatic ``GITHUB_TOKEN``** granted to every workflow run.
+
+        The high-signal finding is a repo where ``default_workflow_permissions``
+        is ``write``: every workflow on that repo (including one introduced by a
+        malicious pull request, if the repo runs untrusted PR workflows) starts
+        with a read/write token over the repo's contents, releases and packages,
+        a far wider blast radius than the locked-down ``read`` default. A second
+        amplifier is ``can_approve_pull_request_reviews=true``, which lets a
+        workflow self-approve PRs and so satisfy a branch-protection
+        review gate without a human. Together they are the
+        execution-side counterpart to :meth:`audit_branch_protection`: branch
+        protection gates code *landing*, this gates what automation may *do*
+        once it runs.
+
+        Walks the repositories the token can reach (``GET /user/repos``) and, for
+        each, reads two read-only policy endpoints:
+
+        * ``GET /repos/{owner}/{repo}/actions/permissions`` — whether Actions is
+          ``enabled`` and the ``allowed_actions`` policy
+          (``all``/``local_only``/``selected``); and
+        * ``GET /repos/{owner}/{repo}/actions/permissions/workflow`` — the
+          ``default_workflow_permissions`` (``read``/``write``) and
+          ``can_approve_pull_request_reviews`` flag.
+
+        Returns a normalized list of
+        ``{"repo", "actions_enabled", "allowed_actions",
+        "default_workflow_permissions", "can_approve_pull_request_reviews"}``
+        dicts. When Actions is disabled on a repo there is no workflow-token
+        policy to read, so ``default_workflow_permissions`` is ``None`` and
+        ``can_approve_pull_request_reviews`` is ``False`` (a disabled repo has no
+        execution surface). A repo the token cannot administer (it lacks the
+        ``repo``/admin scope for this endpoint) answers HTTP 403/404; covenant
+        skips that repo rather than failing the whole audit, so a
+        partial-permission token still reports what it can see. Read-only — it
+        only GETs policy metadata and never enables, disables, or rewrites a
+        permission.
+        """
+        results: list[dict] = []
+        for full_name in self._reachable_repos(max_pages=max_pages):
+            record = self._actions_permissions_for_repo(full_name)
+            if record is not None:
+                results.append(record)
+        return results
+
+    def _actions_permissions_for_repo(self, full_name: str) -> dict | None:
+        """Read one repo's Actions permission posture, or ``None`` if unreadable.
+
+        The Actions-permissions endpoints require the token to administer the
+        repo; a token without that reach answers 403/404, which we swallow for a
+        single repo (returning ``None``) rather than aborting the whole audit so
+        a mixed-permission token still reports every repo it CAN read. When
+        Actions is disabled there is no workflow-token policy to fetch, so the
+        ``default_workflow_permissions`` field is left ``None``.
+        """
+        url = f"{self.base_url}/repos/{full_name}/actions/permissions"
+        probe = self._request_with_retry(url, None, self._headers())
+        # A token that cannot administer this repo answers 403/404 — skip it,
+        # do not fail the run.
+        if probe.status_code in (403, 404):
+            return None
+        if probe.status_code == 401:
+            raise SCMError("authentication failed (401) — check the token")
+        if probe.status_code >= 400:
+            raise SCMError(
+                f"{self.base_url} returned HTTP {probe.status_code} "
+                f"for {full_name} actions permissions"
+            )
+        body = probe.json()
+        if not isinstance(body, dict):
+            return None
+        actions_enabled = bool(body.get("enabled", False))
+        record = {
+            "repo": full_name,
+            "actions_enabled": actions_enabled,
+            "allowed_actions": body.get("allowed_actions"),
+            "default_workflow_permissions": None,
+            "can_approve_pull_request_reviews": False,
+        }
+        # The workflow-token policy only exists when Actions is enabled.
+        if actions_enabled:
+            wf_url = (
+                f"{self.base_url}/repos/{full_name}"
+                "/actions/permissions/workflow"
+            )
+            wf = self._request_with_retry(wf_url, None, self._headers())
+            if wf.status_code in (403, 404):
+                return record
+            if wf.status_code == 401:
+                raise SCMError("authentication failed (401) — check the token")
+            if wf.status_code >= 400:
+                raise SCMError(
+                    f"{self.base_url} returned HTTP {wf.status_code} "
+                    f"for {full_name} workflow permissions"
+                )
+            wf_body = wf.json()
+            if isinstance(wf_body, dict):
+                record["default_workflow_permissions"] = wf_body.get(
+                    "default_workflow_permissions"
+                )
+                record["can_approve_pull_request_reviews"] = bool(
+                    wf_body.get("can_approve_pull_request_reviews", False)
+                )
+        return record
+
     def enumerate_members(self, max_pages: int = DEFAULT_MAX_PAGES) -> list[dict]:
         """List the other members of the orgs this token can reach (lateral moves).
 

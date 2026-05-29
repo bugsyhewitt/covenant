@@ -838,6 +838,32 @@ class BitbucketClient(BaseSCMClient):
         )
         return []
 
+    def audit_actions_permissions(
+        self, max_pages: int = DEFAULT_MAX_PAGES
+    ) -> list[dict]:
+        """No-op on Bitbucket Cloud, which has no Actions-permission API.
+
+        The GitHub flag audits the policy that governs what a workflow run may
+        do — whether Actions is enabled and the default read/write permission of
+        the automatic ``GITHUB_TOKEN`` it grants. Bitbucket Pipelines has no
+        token-readable equivalent: a pipeline's effective permissions derive from
+        the (write-only, non-enumerable) repository/workspace variables and the
+        runner configuration rather than a per-repo ``permissions`` endpoint, so
+        there is nothing for covenant to enumerate here.
+
+        To keep the cross-provider audit uniform, the method exists and returns
+        an empty list (the same normalized shape the other SCMs would yield, just
+        with no entries) and records a single non-fatal ``warnings`` note so the
+        empty result is not misread as a clean bill of health. Read-only — it
+        makes no request at all.
+        """
+        self.warnings.append(
+            "actions-permissions audit is unsupported on Bitbucket Cloud "
+            "(no per-repo Pipelines-permission API); result is empty by "
+            "design, not a clean bill of health"
+        )
+        return []
+
     def enumerate_members(self, max_pages: int = DEFAULT_MAX_PAGES) -> list[dict]:
         """List the other members of the workspaces this token can reach.
 

@@ -1125,6 +1125,87 @@ Example `code_scanning_alerts` array (one open critical CodeQL finding):
 }
 ```
 
+### Actions-permission audit (`--audit-actions-permissions`)
+
+Where `--audit-actions-environments` gates which **deployments** may reach an
+environment's secrets, `--audit-actions-permissions` audits what a workflow run
+may **do once it executes**: whether Actions is enabled on the repo, the
+`allowed_actions` policy, and — the decisive supply-chain field — the **default
+permissions of the automatic `GITHUB_TOKEN`** granted to every run. It is the
+execution-side counterpart to `--audit-branch-protection`: branch protection
+gates code *landing*, this gates what automation may *do* once it runs.
+
+The high-signal finding is a repo where `default_workflow_permissions` is
+`write`: every workflow on that repo — including one introduced by a malicious
+pull request, if the repo runs untrusted PR workflows — starts with a read/write
+token over the repo's contents, releases and packages, a far wider blast radius
+than the locked-down `read` default. A second amplifier is
+`can_approve_pull_request_reviews=true`, which lets a workflow self-approve PRs
+and so satisfy a branch-protection review gate **without a human**.
+
+Pass `--audit-actions-permissions` to `validate-token` and covenant walks the
+repos the token can reach, reading each one's Actions-permission posture with a
+**read-only** query:
+
+| SCM       | Endpoint                                                                                              | Surface read                          |
+|-----------|-------------------------------------------------------------------------------------------------------|---------------------------------------|
+| GitHub    | `GET /repos/{owner}/{repo}/actions/permissions` + `.../actions/permissions/workflow`                 | Actions on/off + workflow-token policy |
+| GitLab    | *(unsupported — no single per-project Actions-permission API; empty result + warning)*               | —                                     |
+| Bitbucket | *(unsupported — no per-repo Pipelines-permission API; empty result + warning)*                       | —                                     |
+
+Each repo is normalized to
+`{"repo", "actions_enabled", "allowed_actions", "default_workflow_permissions", "can_approve_pull_request_reviews"}`.
+`allowed_actions` is the invocation policy (`all`/`local_only`/`selected`),
+`default_workflow_permissions` is `read` or `write` (the decisive field), and
+`can_approve_pull_request_reviews` is the PR self-approval flag.
+
+> **Disabled repos and metadata only.** When Actions is **disabled** on a repo
+> there is no workflow-token policy to read, so `default_workflow_permissions` is
+> `null` and `can_approve_pull_request_reviews` is `false` (a disabled repo has
+> no execution surface). A repo the token cannot **administer** answers HTTP
+> 403/404; covenant **skips it** rather than failing the whole audit, so a
+> partial-permission token still reports every repo it can read. The audit is
+> read-only — it only GETs policy metadata and never enables, disables, or
+> rewrites a permission. GitLab and Bitbucket Cloud have no single per-repo
+> Actions-permission API, so the result is empty there with an explanatory
+> warning rather than a misleading clean bill of health.
+
+The walk is bounded by the same `--max-pages` flag and honors the scope guardrail
+and automatic rate-limit retry/backoff. Like the other `--enumerate-*`/`--audit-*`
+flags the feature is purely additive (all may be combined): without the flag the
+output is unchanged, and with it the v0.1 `scopes`/`user`/`admin` fields are
+untouched — only the `actions_permissions` array is added.
+
+```bash
+covenant github validate-token \
+  --scope-file scope.txt \
+  --audit-actions-permissions \
+  --token-env COVENANT_TOKEN
+```
+
+Example `actions_permissions` array (a write-token repo and a disabled repo):
+
+```json
+{
+  "actions_permissions": [
+    {
+      "repo": "acme-corp/spellbook",
+      "actions_enabled": true,
+      "allowed_actions": "all",
+      "default_workflow_permissions": "write",
+      "can_approve_pull_request_reviews": true
+    },
+    {
+      "repo": "acme-corp/grimoire",
+      "actions_enabled": false,
+      "allowed_actions": null,
+      "default_workflow_permissions": null,
+      "can_approve_pull_request_reviews": false
+    }
+  ]
+}
+```
+
 ### Deployment-environment audit (`--audit-actions-environments`)
 
 A deployment **environment** (GitHub Actions "Environments", GitLab project

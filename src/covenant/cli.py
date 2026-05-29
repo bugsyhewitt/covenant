@@ -556,6 +556,37 @@ def _build_parser() -> argparse.ArgumentParser:
             ),
         )
         token.add_argument(
+            "--audit-actions-permissions",
+            action="store_true",
+            default=False,
+            dest="audit_actions_permissions",
+            help=(
+                "additionally audit the GitHub Actions execution-permission "
+                "posture of the repos this token can reach via a read-only "
+                "query; adds an 'actions_permissions' array of {repo, "
+                "actions_enabled, allowed_actions, default_workflow_permissions, "
+                "can_approve_pull_request_reviews} entries. Where "
+                "--audit-actions-environments gates which DEPLOYMENTS reach an "
+                "environment's secrets, this audits what a workflow run may DO "
+                "once it executes: the decisive field is "
+                "default_workflow_permissions='write', which grants every "
+                "workflow (including one introduced by a malicious PR on a repo "
+                "that runs untrusted PR workflows) a read/write GITHUB_TOKEN "
+                "over the repo's contents/releases/packages — a far wider blast "
+                "radius than the locked-down 'read' default — and "
+                "can_approve_pull_request_reviews=true lets a workflow "
+                "self-approve PRs and so satisfy a review gate without a human: "
+                "the execution-side counterpart to --audit-branch-protection. A "
+                "repo with Actions disabled reports "
+                "default_workflow_permissions=null; a repo the token cannot "
+                "administer is skipped (403/404) rather than failing the whole "
+                "audit. GitLab and Bitbucket Cloud have no single per-repo "
+                "Actions-permission API, so the result is empty there with an "
+                "explanatory warning. Read-only; never enables, disables, or "
+                "rewrites a permission."
+            ),
+        )
+        token.add_argument(
             "--enumerate-members",
             action="store_true",
             default=False,
@@ -961,6 +992,18 @@ def main(argv: list[str] | None = None) -> int:
                 payload["code_scanning_alerts"] = (
                     client.audit_code_scanning_alerts(max_pages=max_pages)
                 )
+            # Optional Actions-permission audit. Read-only, additive: the v0.1
+            # validate-token fields are untouched and the 'actions_permissions'
+            # array only appears when --audit-actions-permissions is requested.
+            # Reports the execution-side posture each workflow run inherits — the
+            # default GITHUB_TOKEN read/write permission and PR self-approval
+            # flag — the supply-chain gap a branch-protection or environment
+            # audit alone does not cover. A repo the token cannot administer is
+            # skipped; only policy metadata is surfaced, never a credential.
+            if getattr(args, "audit_actions_permissions", False):
+                payload["actions_permissions"] = (
+                    client.audit_actions_permissions(max_pages=max_pages)
+                )
             # Optional org/group/workspace member enumeration. Read-only,
             # additive: the v0.1 validate-token fields are untouched and the
             # 'members' array only appears when --enumerate-members is
@@ -1047,6 +1090,7 @@ def main(argv: list[str] | None = None) -> int:
                 or getattr(args, "audit_packages", False)
                 or getattr(args, "audit_secret_scanning", False)
                 or getattr(args, "audit_code_scanning_alerts", False)
+                or getattr(args, "audit_actions_permissions", False)
                 or getattr(args, "enumerate_members", False)
                 or getattr(args, "enumerate_collaborators", False)
                 or getattr(args, "scan_commits", False)
