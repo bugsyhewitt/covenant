@@ -390,6 +390,50 @@ class _GitHubHandler(BaseHTTPRequestHandler):
                 },
             )
         elif parsed.path.startswith("/repos/") and parsed.path.endswith(
+            "/actions/permissions/workflow"
+        ):
+            # Actions workflow-token policy (--audit-actions-permissions). The
+            # spellbook repo grants every workflow a read/WRITE GITHUB_TOKEN and
+            # lets workflows self-approve PRs — the high-signal posture; the
+            # grimoire repo uses the locked-down 'read' default with no
+            # self-approval. Read-only policy metadata; never a credential.
+            repo = "/".join(parsed.path.split("/")[2:4])
+            if repo.endswith("/spellbook"):
+                self._json(
+                    200,
+                    {
+                        "default_workflow_permissions": "write",
+                        "can_approve_pull_request_reviews": True,
+                    },
+                )
+            else:
+                self._json(
+                    200,
+                    {
+                        "default_workflow_permissions": "read",
+                        "can_approve_pull_request_reviews": False,
+                    },
+                )
+        elif parsed.path.startswith("/repos/") and parsed.path.endswith(
+            "/actions/permissions"
+        ):
+            # Actions execution-permission posture (--audit-actions-permissions).
+            # The spellbook repo has Actions ENABLED with allowed_actions='all';
+            # the grimoire repo has Actions DISABLED (so there is no
+            # workflow-token policy to read — covenant reports
+            # default_workflow_permissions=null for it). Read-only metadata.
+            repo = "/".join(parsed.path.split("/")[2:4])
+            if repo.endswith("/spellbook"):
+                self._json(
+                    200,
+                    {"enabled": True, "allowed_actions": "all"},
+                )
+            else:
+                self._json(
+                    200,
+                    {"enabled": False},
+                )
+        elif parsed.path.startswith("/repos/") and parsed.path.endswith(
             "/actions/secrets"
         ):
             # Repo-level Actions secret-NAME enumeration

@@ -1254,6 +1254,35 @@ class GitLabClient(BaseSCMClient):
                     )
         return results
 
+    def audit_actions_permissions(
+        self, max_pages: int = DEFAULT_MAX_PAGES
+    ) -> list[dict]:
+        """No-op on GitLab, which has no per-repo Actions-permission API.
+
+        The GitHub flag audits the policy that governs what a workflow run may
+        do — whether Actions is enabled and, decisively, the default
+        read/write permission of the automatic ``GITHUB_TOKEN`` granted to every
+        run. GitLab CI has no single token-readable equivalent: the analogous
+        controls (the CI/CD job-token scope, protected-branch CI rules, the
+        instance-level pipeline settings) are spread across distinct,
+        differently-shaped settings rather than one ``actions/permissions``
+        endpoint, so there is no uniform per-repo record for covenant to surface
+        under this flag.
+
+        To keep the cross-provider audit uniform, the method exists and returns
+        an empty list (the same normalized shape the other SCMs would yield, just
+        with no entries) and records a single non-fatal ``warnings`` note so the
+        operator understands the empty result reflects a platform-model
+        difference, not a clean bill of health. Read-only — it makes no request.
+        """
+        self.warnings.append(
+            "actions-permissions audit is unsupported on GitLab "
+            "(no single per-project Actions-permission API; CI job-token scope "
+            "and pipeline settings are governed separately); result is empty by "
+            "design, not a clean bill of health"
+        )
+        return []
+
     def enumerate_members(self, max_pages: int = DEFAULT_MAX_PAGES) -> list[dict]:
         """List the other members of the groups this token can reach (lateral moves).
 
