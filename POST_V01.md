@@ -674,6 +674,49 @@ fuller blast-radius picture — rather than reopening closed items.
 > endpoints on all three SCMs and the same high-signal blast-radius framing — so
 > this lap took member enumeration instead.
 
+### Collaborator enumeration in validate-token (`--enumerate-collaborators`) — ✅ IMPLEMENTED (Phase 2, Rotation 22)
+
+> **Status: shipped.** A read-only `--enumerate-collaborators` flag on
+> `validate-token` maps the *repo-scoped ghost-account* surface. Where
+> `--enumerate-members` (Rotation 21) maps the people who share an
+> org/group/workspace's reach, this is REPO-scoped and surfaces the higher-signal
+> blast radius: the accounts granted access DIRECTLY on a specific repository
+> rather than through org membership — the classic ghost-account / ex-employee /
+> leftover-contractor vector (`outside=true`) that an org-member audit misses and
+> that survives long after the person leaves. A write-or-above direct grant is a
+> direct supply-chain and persistence risk. It walks the repos the token can reach
+> and, for each, lists its per-repo grants: GitHub queries
+> `GET /repos/{owner}/{repo}/collaborators?affiliation=outside` (so the result set
+> *is* the outside collaborators) and reduces the `permissions` map to the single
+> highest-privilege `role` (admin > maintain > write > triage > read); GitLab
+> walks `GET /api/v4/projects/{id}/members` (the non-`/all` endpoint — grants made
+> on the project itself, excluding group-inherited — mapping numeric
+> `access_level` to the same role vocabulary); Bitbucket walks
+> `GET /2.0/repositories/{workspace}/{repo}/permissions-config/users` (the explicit
+> per-repo user-permission config, surfacing `admin`/`write`/`read` verbatim, and
+> failing soft on the repo-admin-only 403). **The decisive invariant is
+> identity-and-permission-only disclosure**: covenant surfaces the username and
+> access level and NEVER an email, SSH/GPG key, or any credential, and never grants
+> or revokes access. The walk reuses the shared paginator, scope guardrail and
+> rate-limit backoff, is bounded by `--max-pages`, and composes with every other
+> `--enumerate-*`/`--audit-*` flag. Purely additive: the v0.1 `scopes`/`user`/`admin`
+> fields are untouched and the `collaborators` array appears only when the flag is
+> set. Tests: `tests/test_enumerate_collaborators.py` covers each client's
+> normalized `{repo, username, role, outside}` shape, the role mapping across all
+> three SCMs, the `outside=true` flag, the no-email/key/credential-leak invariant,
+> e2e presence-only-when-requested, composition with the full
+> `--enumerate-*`/`--audit-*` family, the scope-guardrail gate (exit 2), and
+> `--help` documentation. Full suite: 301 passing (290 baseline + 11 new), zero
+> regressions. README updated with a "Collaborator enumeration" subsection.
+>
+> **Why this over OAuth-app enumeration:** the Rotation 21 note flagged OAuth-app /
+> authorized-application enumeration as lacking three-SCM parity (GitHub removed
+> its authorized-OAuth-apps listing; GitLab/Bitbucket have no clean token-reachable
+> equivalent), which would force a lopsided, mostly-stubbed feature. Collaborator
+> enumeration has clean, documented, read-only endpoints on all three SCMs and a
+> distinct high-signal framing (per-repo ghost accounts, separate from the
+> org-level people surfaced by `--enumerate-members`), so this lap took it.
+
 **Remaining candidate directions (unimplemented, for future laps):** OAuth-app /
 authorized-application enumeration (note its weak three-SCM parity, above),
 team/sub-group enumeration, and commit-history secret scanning (`git log` blob

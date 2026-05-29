@@ -690,6 +690,73 @@ class BitbucketClient(BaseSCMClient):
                     )
         return results
 
+    def enumerate_collaborators(
+        self, max_pages: int = DEFAULT_MAX_PAGES
+    ) -> list[dict]:
+        """List the per-repo user grants on the repos this token can reach.
+
+        Bitbucket Cloud's analogue of GitHub outside-collaborator enumeration.
+        Where :meth:`enumerate_members` maps the people who share a *workspace's*
+        reach, this is repo-scoped and surfaces the higher-signal blast radius:
+        the individual user accounts granted access DIRECTLY on a specific
+        repository via its explicit user-permission config, rather than via
+        workspace membership. A direct repo grant is Bitbucket's outside-
+        collaborator equivalent — a personal account bolted onto one repo (often
+        a contractor or ex-employee) that a workspace-member audit misses and
+        that survives long after the person leaves. A repo with a write-or-above
+        direct grant is a supply-chain and persistence risk.
+
+        Walks the repositories the token can reach
+        (``GET /2.0/repositories?role=member``) and, for each, lists its explicit
+        user permissions (``GET /2.0/repositories/{workspace}/{repo}/
+        permissions-config/users``). Each entry carries a ``user`` object (we
+        surface its ``nickname``/``display_name`` as ``username``) and a
+        ``permission`` level (``admin``/``write``/``read``); we surface the
+        permission verbatim as ``role`` (it already matches the cross-SCM
+        vocabulary). Every returned account is a direct (outside-style) grant, so
+        ``outside`` is ``True``. The endpoint requires repo-admin and a low-
+        privilege token gets a 403, so it fails soft (that repo contributes
+        nothing) rather than aborting the audit. Returns a normalized list of
+        ``{"repo", "username", "role", "outside"}`` dicts. Only membership
+        identity and the permission level are surfaced — never an email, key, or
+        credential. Read-only.
+        """
+        results: list[dict] = []
+        for full_name in self._reachable_repos(max_pages=max_pages):
+            try:
+                pages = list(
+                    self._get_paginated(
+                        f"/2.0/repositories/{full_name}/permissions-config/users",
+                        params={"pagelen": 100},
+                        max_pages=max_pages,
+                        next_request=_bitbucket_next,
+                    )
+                )
+            except SCMError:
+                # Repo-admin is required to read the explicit-permission config;
+                # a low-privilege token gets a 403. Fail soft so the audit still
+                # reports the repos it can see.
+                continue
+            for resp in pages:
+                for item in resp.json().get("values", []):
+                    user = item.get("user") or {}
+                    username = (
+                        user.get("nickname")
+                        or user.get("display_name")
+                        or user.get("username")
+                    )
+                    if not username:
+                        continue
+                    results.append(
+                        {
+                            "repo": full_name,
+                            "username": username,
+                            "role": item.get("permission") or "read",
+                            "outside": True,
+                        }
+                    )
+        return results
+
     def validate_token(self) -> dict:
         user = self._get("/2.0/user").json()
         username = user.get("username") or user.get("nickname")

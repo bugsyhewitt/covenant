@@ -445,14 +445,38 @@ def _build_parser() -> argparse.ArgumentParser:
             ),
         )
         token.add_argument(
+            "--enumerate-collaborators",
+            action="store_true",
+            default=False,
+            dest="enumerate_collaborators",
+            help=(
+                "additionally list the per-repo collaborator grants on the repos "
+                "this token can reach (GitHub outside collaborators, GitLab "
+                "direct project members, Bitbucket explicit repo user grants) via "
+                "a read-only query; adds a 'collaborators' array of "
+                "{repo, username, role, outside} entries. Where --enumerate-members "
+                "maps people who share an ORG/group/workspace's reach, this is "
+                "REPO-scoped and surfaces the higher-signal ghost-account / "
+                "ex-employee / leftover-contractor vector: personal accounts "
+                "granted access DIRECTLY on a specific repo (outside=true) that an "
+                "org-member audit misses and that survive long after the person "
+                "leaves. A write-or-above direct grant is a supply-chain and "
+                "persistence risk. 'role' is the highest-privilege level "
+                "(admin/maintain/write/triage/read). Only identity + permission "
+                "level are surfaced — never an email, key, or credential. The "
+                "audit never grants or revokes access."
+            ),
+        )
+        token.add_argument(
             "--max-pages",
             type=int,
             default=DEFAULT_MAX_PAGES,
             help=(
                 f"maximum org/group/workspace/key/gist/webhook/deploy-key/"
-                f"branch-protection/actions-secret/repo-visibility/member pages "
-                f"to walk when an --enumerate-* or --audit-* flag is set "
-                f"(default: {DEFAULT_MAX_PAGES}, hard ceiling: {HARD_MAX_PAGES})."
+                f"branch-protection/actions-secret/repo-visibility/member/"
+                f"collaborator pages to walk when an --enumerate-* or --audit-* "
+                f"flag is set (default: {DEFAULT_MAX_PAGES}, hard ceiling: "
+                f"{HARD_MAX_PAGES})."
             ),
         )
 
@@ -708,6 +732,18 @@ def main(argv: list[str] | None = None) -> int:
                 payload["members"] = client.enumerate_members(
                     max_pages=max_pages
                 )
+            # Optional per-repo collaborator enumeration. Read-only, additive:
+            # the v0.1 validate-token fields are untouched and the
+            # 'collaborators' array only appears when --enumerate-collaborators
+            # is requested. Repo-scoped complement to --enumerate-members: it
+            # maps the ghost-account / ex-employee surface — personal accounts
+            # granted access DIRECTLY on a repo (outside=true) that an
+            # org-member audit misses; only identity + permission level are
+            # surfaced, never an email, key, or credential.
+            if getattr(args, "enumerate_collaborators", False):
+                payload["collaborators"] = client.enumerate_collaborators(
+                    max_pages=max_pages
+                )
             if (
                 getattr(args, "enumerate_orgs", False)
                 or getattr(args, "enumerate_keys", False)
@@ -719,6 +755,7 @@ def main(argv: list[str] | None = None) -> int:
                 or getattr(args, "audit_actions_environments", False)
                 or getattr(args, "audit_repo_visibility", False)
                 or getattr(args, "enumerate_members", False)
+                or getattr(args, "enumerate_collaborators", False)
             ) and client.warnings:
                 payload["warnings"] = list(client.warnings)
         else:  # pragma: no cover - argparse guarantees a valid module

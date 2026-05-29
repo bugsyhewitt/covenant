@@ -34,6 +34,28 @@ def _github_branch_policy(policy: dict | None) -> str:
     return "all"
 
 
+def _github_collaborator_role(collaborator: dict) -> str:
+    """Reduce a GitHub collaborator object to its highest-privilege role label.
+
+    GitHub reports a collaborator's access both as a ``role_name`` string and a
+    ``permissions`` boolean map (``admin``/``maintain``/``push``/``triage``/
+    ``pull``). We collapse this to the single most-privileged label so the
+    blast-radius signal is unambiguous, checking the map from highest to lowest
+    privilege and falling back to ``role_name`` (normalizing ``push`` -> ``write``
+    and ``pull`` -> ``read``) when the map is absent. An unrecognized shape
+    reports ``"read"`` (the least-privilege, safe default).
+    """
+    perms = collaborator.get("permissions")
+    if isinstance(perms, dict):
+        for label in ("admin", "maintain", "push", "triage", "pull"):
+            if perms.get(label):
+                return {"push": "write", "pull": "read"}.get(label, label)
+    role_name = collaborator.get("role_name")
+    if role_name:
+        return {"push": "write", "pull": "read"}.get(role_name, role_name)
+    return "read"
+
+
 def _next_link(resp: httpx.Response) -> tuple[str, None] | None:
     """Parse the RFC-5988 ``Link`` header and return the ``rel="next"`` target.
 
@@ -748,6 +770,61 @@ class GitHubClient(BaseSCMClient):
                                 "role": role,
                             }
                         )
+        return results
+
+    def enumerate_collaborators(
+        self, max_pages: int = DEFAULT_MAX_PAGES
+    ) -> list[dict]:
+        """List the collaborators on the repos this token can reach (ghost accounts).
+
+        Where :meth:`enumerate_members` maps the people who share an *org's*
+        reach, collaborator enumeration is repo-scoped and surfaces the
+        higher-signal blast radius: the accounts granted access to a SPECIFIC
+        repository, and in particular the *outside* collaborators — individuals
+        who are NOT members of the owning org yet still hold repo access. Outside
+        collaborators are the classic ghost-account / ex-employee / leftover-
+        contractor vector: a personal account with standing push access to a
+        critical repo, invisible to an org-member audit, that survives long after
+        the person leaves. A repo with write/admin outside collaborators is a
+        direct supply-chain and persistence risk.
+
+        Walks the repositories the token can reach (``GET /user/repos``) and, for
+        each, lists ``GET /repos/{owner}/{repo}/collaborators``. The collaborator
+        object carries a ``permissions`` map (``admin``/``push``/``pull``/...);
+        covenant reduces it to the single highest-privilege ``role``
+        (``admin`` > ``maintain`` > ``write`` > ``triage`` > ``read``) — the
+        decisive blast-radius signal — and flags ``outside`` from GitHub's
+        ``role_name``/affiliation. To find the outside set without a second
+        pass, the listing is fetched with ``affiliation=outside`` so every
+        returned account is an outside collaborator (``outside=True``); a repo
+        with none yields nothing. Returns a normalized list of
+        ``{"repo", "username", "role", "outside"}`` dicts. Only public identity
+        and the permission level are surfaced — never an email, key, or
+        credential. The audit is read-only and never grants or revokes access.
+        """
+        results: list[dict] = []
+        for full_name in self._reachable_repos(max_pages=max_pages):
+            for resp in self._get_paginated(
+                f"/repos/{full_name}/collaborators",
+                params={"affiliation": "outside", "per_page": 100},
+                max_pages=max_pages,
+                next_request=_next_link,
+            ):
+                body = resp.json()
+                if not isinstance(body, list):
+                    continue
+                for item in body:
+                    username = item.get("login")
+                    if not username:
+                        continue
+                    results.append(
+                        {
+                            "repo": full_name,
+                            "username": username,
+                            "role": _github_collaborator_role(item),
+                            "outside": True,
+                        }
+                    )
         return results
 
     def validate_token(self) -> dict:
