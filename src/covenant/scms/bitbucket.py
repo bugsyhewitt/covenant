@@ -5,7 +5,13 @@ from __future__ import annotations
 import httpx
 
 from ..tokens import classify_token
-from .base import DEFAULT_MAX_PAGES, BaseSCMClient, SCMError
+from .base import (
+    DEFAULT_MAX_PAGES,
+    BaseSCMClient,
+    SCMError,
+    codeowners_candidate_paths,
+    parse_codeowners,
+)
 
 
 def _bitbucket_next(resp: httpx.Response) -> tuple[str, None] | None:
@@ -634,6 +640,80 @@ class BitbucketClient(BaseSCMClient):
                     }
                 )
         return results
+
+    def audit_codeowners(self, max_pages: int = DEFAULT_MAX_PAGES) -> list[dict]:
+        """Audit the CODEOWNERS coverage of the repos this token can reach.
+
+        CODEOWNERS routes mandatory review to a named owner per path and is the
+        partner control to branch protection: Bitbucket honors it via the
+        *Code owners approval* merge check — but only for paths a rule matches. A
+        repo with NO CODEOWNERS file (``present=false``) cannot gate review by
+        owner at all, and one whose CODEOWNERS has rules but no catch-all ``*``
+        leaves every unmatched path with no required owner, a gap that the
+        branch-protection audit alone does not reveal.
+
+        Walks the repositories the token can reach
+        (``GET /2.0/repositories?role=member``) and, for each, probes the
+        standard CODEOWNERS locations (``CODEOWNERS``, ``docs/CODEOWNERS`` — and,
+        for parity, the provider directory, though Bitbucket reads it from the
+        root) via the source API
+        (``GET /2.0/repositories/{full_name}/src/HEAD/{path}``, which returns the
+        file's RAW text on the main branch's tip), reporting the first one found.
+        Returns the same normalized
+        ``{"repo", "present", "path", "rule_count", "has_global_owner"}`` shape as
+        the other SCMs. Only the rule COUNT and the presence of a ``*`` catch-all
+        are surfaced — the owner handles are not echoed and no other content is
+        read. Read-only.
+        """
+        results: list[dict] = []
+        for full_name in self._reachable_repos(max_pages=max_pages):
+            record = {
+                "repo": full_name,
+                "present": False,
+                "path": None,
+                "rule_count": 0,
+                "has_global_owner": False,
+            }
+            # Bitbucket resolves CODEOWNERS from the repo root (and docs/); it has
+            # no provider directory, so an empty provider arg drops that probe.
+            for path in codeowners_candidate_paths(""):
+                text = self._fetch_file_content(
+                    f"/2.0/repositories/{full_name}/src/HEAD/{path}"
+                )
+                if text is None:
+                    continue
+                summary = parse_codeowners(text)
+                record.update(
+                    {
+                        "present": True,
+                        "path": path,
+                        "rule_count": summary["rule_count"],
+                        "has_global_owner": summary["has_global_owner"],
+                    }
+                )
+                break
+            results.append(record)
+        return results
+
+    def _fetch_file_content(self, path: str) -> str | None:
+        """GET a repo file's RAW text, or ``None`` if it does not exist.
+
+        Bitbucket's source API returns the file body verbatim (not a JSON
+        envelope), so we read ``resp.text`` directly. A 404 (file absent on the
+        ref) returns ``None`` so the caller can probe several candidate paths
+        cheaply.
+        """
+        url = f"{self.base_url}{path}"
+        resp = self._request_with_retry(url, None, self._headers())
+        if resp.status_code == 404:
+            return None
+        if resp.status_code == 401:
+            raise SCMError("authentication failed (401) — check the token")
+        if resp.status_code >= 400:
+            raise SCMError(
+                f"{self.base_url} returned HTTP {resp.status_code} for {path}"
+            )
+        return resp.text
 
     def enumerate_members(self, max_pages: int = DEFAULT_MAX_PAGES) -> list[dict]:
         """List the other members of the workspaces this token can reach.

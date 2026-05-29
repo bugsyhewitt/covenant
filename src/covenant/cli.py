@@ -426,6 +426,31 @@ def _build_parser() -> argparse.ArgumentParser:
             ),
         )
         token.add_argument(
+            "--audit-codeowners",
+            action="store_true",
+            default=False,
+            dest="audit_codeowners",
+            help=(
+                "additionally audit the CODEOWNERS coverage of the repos this "
+                "token can reach (GitHub/GitLab/Bitbucket repository CODEOWNERS "
+                "file) via a read-only file fetch; adds a 'codeowners' array of "
+                "{repo, present, path, rule_count, has_global_owner} entries. "
+                "CODEOWNERS is the control that routes MANDATORY review to a "
+                "named owner per path, so it is the partner to "
+                "--audit-branch-protection: a protected branch's "
+                "require-code-owner-review gate only bites for paths a "
+                "CODEOWNERS rule matches. A reachable repo with present=false has "
+                "NO owner-review gate at all, and one with rules but "
+                "has_global_owner=false leaves every unmatched path — including a "
+                "file an attacker newly adds — with no required owner: the "
+                "owner-coverage gap a branch-protection audit alone misses. Only "
+                "the rule COUNT and whether a catch-all '*' rule exists are "
+                "surfaced — the owner handles themselves are never echoed and no "
+                "other repository content is read. Read-only; never edits "
+                "CODEOWNERS or any review setting."
+            ),
+        )
+        token.add_argument(
             "--enumerate-members",
             action="store_true",
             default=False,
@@ -518,8 +543,8 @@ def _build_parser() -> argparse.ArgumentParser:
             default=DEFAULT_MAX_PAGES,
             help=(
                 f"maximum org/group/workspace/key/gist/webhook/deploy-key/"
-                f"branch-protection/actions-secret/repo-visibility/member/"
-                f"collaborator/commit pages to walk when an --enumerate-*, "
+                f"branch-protection/actions-secret/repo-visibility/codeowners/"
+                f"member/collaborator/commit pages to walk when an --enumerate-*, "
                 f"--audit-*, or --scan-commits flag is set (default: "
                 f"{DEFAULT_MAX_PAGES}, hard ceiling: {HARD_MAX_PAGES})."
             ),
@@ -767,6 +792,17 @@ def main(argv: list[str] | None = None) -> int:
                 payload["repo_visibility"] = client.audit_repo_visibility(
                     max_pages=max_pages
                 )
+            # Optional CODEOWNERS-coverage audit. Read-only, additive: the v0.1
+            # validate-token fields are untouched and the 'codeowners' array
+            # only appears when --audit-codeowners is requested. The partner to
+            # --audit-branch-protection: reports whether each reachable repo has
+            # an owner-review gate (a CODEOWNERS file) and whether a catch-all
+            # '*' rule covers otherwise-unmatched paths; only the rule count and
+            # the '*' flag are surfaced, never the owner handles or other content.
+            if getattr(args, "audit_codeowners", False):
+                payload["codeowners"] = client.audit_codeowners(
+                    max_pages=max_pages
+                )
             # Optional org/group/workspace member enumeration. Read-only,
             # additive: the v0.1 validate-token fields are untouched and the
             # 'members' array only appears when --enumerate-members is
@@ -848,6 +884,7 @@ def main(argv: list[str] | None = None) -> int:
                 or getattr(args, "enumerate_actions_secrets", False)
                 or getattr(args, "audit_actions_environments", False)
                 or getattr(args, "audit_repo_visibility", False)
+                or getattr(args, "audit_codeowners", False)
                 or getattr(args, "enumerate_members", False)
                 or getattr(args, "enumerate_collaborators", False)
                 or getattr(args, "scan_commits", False)

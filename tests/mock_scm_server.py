@@ -567,6 +567,47 @@ class _GitHubHandler(BaseHTTPRequestHandler):
                         },
                     ],
                 )
+        elif parsed.path.startswith("/repos/") and "/contents/" in parsed.path:
+            # CODEOWNERS-coverage audit (--audit-codeowners). GitHub serves file
+            # content as a JSON object with base64-encoded `content`. covenant
+            # probes .github/CODEOWNERS, CODEOWNERS, then docs/CODEOWNERS and
+            # reports the first hit. The spellbook repo has a PARTIAL CODEOWNERS
+            # (rules but no catch-all '*' — the high-signal coverage gap) at
+            # .github/CODEOWNERS; the grimoire repo has a COMPLETE one (with a '*'
+            # global owner) at the repo root. Any other path 404s (absent).
+            import base64 as _b64
+
+            segs = parsed.path.split("/")
+            repo = "/".join(segs[2:4])
+            file_path = parsed.path.split("/contents/", 1)[1]
+            # spellbook: rules but NO catch-all '*' (the partial-coverage gap).
+            spellbook_body = (
+                "# spellbook ownership\n"
+                "src/ @org/backend\n"
+                "docs/ @org/docs-team\n"
+            )
+            grimoire_body = (
+                "# grimoire ownership\n"
+                "* @org/maintainers\n"
+                "src/ @org/backend\n"
+            )
+            content = None
+            if repo.endswith("/spellbook") and file_path == ".github/CODEOWNERS":
+                content = spellbook_body
+            elif repo.endswith("/grimoire") and file_path == "CODEOWNERS":
+                content = grimoire_body
+            if content is None:
+                self._json(404, {"message": "Not Found"})
+            else:
+                self._json(
+                    200,
+                    {
+                        "name": "CODEOWNERS",
+                        "path": file_path,
+                        "encoding": "base64",
+                        "content": _b64.b64encode(content.encode()).decode(),
+                    },
+                )
         elif parsed.path == "/user/orgs":
             # Org/blast-radius enumeration (--enumerate-orgs). Supports the
             # MULTIPAGE_PREFIX is not relevant here (no query); serve a single
@@ -654,6 +695,7 @@ class _GitLabHandler(BaseHTTPRequestHandler):
                         "id": 99,
                         "name": f"{search}-book-{page}",
                         "path_with_namespace": f"acme/{search}-book-{page}",
+                        "default_branch": "main",
                         "visibility": "private",
                         "web_url": f"https://gitlab.com/acme/{search}-book-{page}",
                         "description": "A repository of spells",
@@ -954,6 +996,38 @@ class _GitLabHandler(BaseHTTPRequestHandler):
                 ],
                 headers={"X-Page": "1", "X-Next-Page": "", "X-Total-Pages": "1"},
             )
+        elif parsed.path.startswith("/api/v4/projects/") and (
+            "/repository/files/" in parsed.path
+        ):
+            # CODEOWNERS-coverage audit (--audit-codeowners). GitLab serves file
+            # content as a JSON object with base64-encoded `content`, addressed by
+            # URL-encoded path + `ref`. covenant probes .gitlab/CODEOWNERS,
+            # CODEOWNERS, then docs/CODEOWNERS. The mock's single project has a
+            # PARTIAL CODEOWNERS (rules but no catch-all '*' — the high-signal
+            # coverage gap) at .gitlab/CODEOWNERS; other paths 404 (absent).
+            import base64 as _b64
+            from urllib.parse import unquote
+
+            encoded = parsed.path.split("/repository/files/", 1)[1]
+            file_path = unquote(encoded)
+            body = (
+                "# ownership\n"
+                "src/ @backend\n"
+                "docs/ @docs-team\n"
+            )  # no '*' rule on purpose
+            if file_path == ".gitlab/CODEOWNERS":
+                self._json(
+                    200,
+                    {
+                        "file_path": file_path,
+                        "ref": params.get("ref", ["main"])[0],
+                        "encoding": "base64",
+                        "content": _b64.b64encode(body.encode()).decode(),
+                    },
+                    headers={"X-Page": "1", "X-Next-Page": "", "X-Total-Pages": "1"},
+                )
+            else:
+                self._json(404, {"message": "404 File Not Found"})
         elif parsed.path == "/api/v4/groups":
             # Group/blast-radius enumeration (--enumerate-orgs).
             self._json(
@@ -1387,6 +1461,31 @@ class _BitbucketHandler(BaseHTTPRequestHandler):
                     "size": 2,
                 },
             )
+        elif parsed.path.startswith("/2.0/repositories/") and (
+            "/src/HEAD/" in parsed.path
+        ):
+            # CODEOWNERS-coverage audit (--audit-codeowners). Bitbucket's source
+            # API returns the file's RAW text (not a JSON envelope). covenant
+            # probes CODEOWNERS then docs/CODEOWNERS at the HEAD of the main
+            # branch. The mock's single repo has a PARTIAL CODEOWNERS (rules but
+            # no catch-all '*' — the high-signal coverage gap) at the root; other
+            # paths 404 (absent).
+            file_path = parsed.path.split("/src/HEAD/", 1)[1]
+            if file_path == "CODEOWNERS":
+                raw = (
+                    b"# ownership\n"
+                    b"src/ @backend\n"
+                    b"docs/ @docs-team\n"
+                )  # no '*' rule on purpose
+                self.send_response(200)
+                self.send_header("Content-Type", "text/plain")
+                self.send_header("Content-Length", str(len(raw)))
+                self.end_headers()
+                self.wfile.write(raw)
+            else:
+                self._json(
+                    404, {"type": "error", "error": {"message": "Not Found"}}
+                )
         elif parsed.path == "/2.0/workspaces":
             # Workspace/blast-radius enumeration (--enumerate-orgs).
             self._json(

@@ -7,7 +7,13 @@ from urllib.parse import quote
 import httpx
 
 from ..tokens import classify_token
-from .base import DEFAULT_MAX_PAGES, BaseSCMClient, SCMError
+from .base import (
+    DEFAULT_MAX_PAGES,
+    BaseSCMClient,
+    SCMError,
+    codeowners_candidate_paths,
+    parse_codeowners,
+)
 
 #: GitLab offset pagination page size — the API cap is 100 per page.
 _PER_PAGE = 100
@@ -560,6 +566,7 @@ class GitLabClient(BaseSCMClient):
                         "repo": item.get("path_with_namespace")
                         or item.get("name")
                         or str(project_id),
+                        "default_branch": item.get("default_branch") or "main",
                     }
                 )
         return out
@@ -868,6 +875,93 @@ class GitLabClient(BaseSCMClient):
                     }
                 )
         return results
+
+    def audit_codeowners(self, max_pages: int = DEFAULT_MAX_PAGES) -> list[dict]:
+        """Audit the CODEOWNERS coverage of the projects this token can reach.
+
+        CODEOWNERS routes mandatory review to a named owner per path and is the
+        partner control to branch protection: GitLab honors it via *code-owner
+        approval* on a protected branch — but only for paths a rule matches. A
+        project with NO CODEOWNERS file (``present=false``) cannot gate review by
+        owner at all, and one whose CODEOWNERS has rules but no catch-all ``*``
+        leaves every unmatched path with no required owner, a gap that the
+        branch-protection audit alone does not reveal.
+
+        Walks the projects the token is a member of
+        (``GET /api/v4/projects?membership=true``) and, for each, probes the
+        standard CODEOWNERS locations (``.gitlab/CODEOWNERS``, ``CODEOWNERS``,
+        ``docs/CODEOWNERS``) via the repository-files API
+        (``GET /api/v4/projects/{id}/repository/files/{path}?ref={branch}``,
+        which returns base64 ``content``), reporting the first one found on the
+        project's default branch. Returns the same normalized
+        ``{"repo", "present", "path", "rule_count", "has_global_owner"}`` shape as
+        the other SCMs. Only the rule COUNT and the presence of a ``*`` catch-all
+        are surfaced — the owner handles are not echoed and no other content is
+        read. Read-only.
+        """
+        results: list[dict] = []
+        for project in self._reachable_projects(max_pages=max_pages):
+            project_id = project["id"]
+            repo = project["repo"]
+            ref = project.get("default_branch") or "main"
+            record = {
+                "repo": repo,
+                "present": False,
+                "path": None,
+                "rule_count": 0,
+                "has_global_owner": False,
+            }
+            for path in codeowners_candidate_paths(".gitlab"):
+                encoded_path = quote(path, safe="")
+                api_path = (
+                    f"/api/v4/projects/{project_id}/repository/files/"
+                    f"{encoded_path}"
+                )
+                text = self._fetch_file_content(api_path, ref)
+                if text is None:
+                    continue
+                summary = parse_codeowners(text)
+                record.update(
+                    {
+                        "present": True,
+                        "path": path,
+                        "rule_count": summary["rule_count"],
+                        "has_global_owner": summary["has_global_owner"],
+                    }
+                )
+                break
+            results.append(record)
+        return results
+
+    def _fetch_file_content(self, api_path: str, ref: str) -> str | None:
+        """GET a project file's decoded text, or ``None`` if it does not exist.
+
+        Uses GitLab's repository-files API, which returns a JSON object with a
+        base64-encoded ``content`` field. A 404 (file absent on the ref) returns
+        ``None`` so the caller can probe several candidate paths cheaply.
+        """
+        url = f"{self.base_url}{api_path}"
+        resp = self._request_with_retry(url, {"ref": ref}, self._headers())
+        if resp.status_code == 404:
+            return None
+        if resp.status_code == 401:
+            raise SCMError("authentication failed (401) — check the token")
+        if resp.status_code >= 400:
+            raise SCMError(
+                f"{self.base_url} returned HTTP {resp.status_code} for {api_path}"
+            )
+        body = resp.json()
+        if not isinstance(body, dict):
+            return None
+        encoded = body.get("content")
+        if not isinstance(encoded, str):
+            return ""
+        import base64  # noqa: PLC0415
+
+        try:
+            return base64.b64decode(encoded).decode("utf-8", errors="replace")
+        except (ValueError, TypeError):
+            return ""
 
     def enumerate_members(self, max_pages: int = DEFAULT_MAX_PAGES) -> list[dict]:
         """List the other members of the groups this token can reach (lateral moves).
