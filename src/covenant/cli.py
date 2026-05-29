@@ -308,14 +308,29 @@ def _build_parser() -> argparse.ArgumentParser:
             ),
         )
         token.add_argument(
+            "--enumerate-webhooks",
+            action="store_true",
+            default=False,
+            dest="enumerate_webhooks",
+            help=(
+                "additionally list the org/group/workspace webhooks this token "
+                "can reach (GitHub org hooks, GitLab group hooks, Bitbucket "
+                "workspace hooks) via a read-only query; adds a 'webhooks' "
+                "array of {scope, owner, id, url, events, active} entries. "
+                "Webhooks are an EXFILTRATION and SSRF surface: the destination "
+                "URL is where event payloads (repo content/metadata) are POSTed "
+                "and can be an internal-network target. The destination URL is "
+                "surfaced; the hook SECRET is never requested or echoed."
+            ),
+        )
+        token.add_argument(
             "--max-pages",
             type=int,
             default=DEFAULT_MAX_PAGES,
             help=(
-                f"maximum org/group/workspace/key/gist pages to walk when "
-                f"--enumerate-orgs, --enumerate-keys or --enumerate-gists is "
-                f"set (default: {DEFAULT_MAX_PAGES}, hard ceiling: "
-                f"{HARD_MAX_PAGES})."
+                f"maximum org/group/workspace/key/gist/webhook pages to walk "
+                f"when an --enumerate-* flag is set (default: "
+                f"{DEFAULT_MAX_PAGES}, hard ceiling: {HARD_MAX_PAGES})."
             ),
         )
 
@@ -502,10 +517,20 @@ def main(argv: list[str] | None = None) -> int:
             # surfaced (the leak signal); file content is never read.
             if getattr(args, "enumerate_gists", False):
                 payload["gists"] = client.enumerate_gists(max_pages=max_pages)
+            # Optional webhook enumeration. Read-only, additive: the v0.1
+            # validate-token fields are untouched and the 'webhooks' array only
+            # appears when --enumerate-webhooks is requested. Maps the
+            # exfiltration/SSRF surface (where org/group/workspace events are
+            # POSTed); the hook secret is never requested or echoed.
+            if getattr(args, "enumerate_webhooks", False):
+                payload["webhooks"] = client.enumerate_webhooks(
+                    max_pages=max_pages
+                )
             if (
                 getattr(args, "enumerate_orgs", False)
                 or getattr(args, "enumerate_keys", False)
                 or getattr(args, "enumerate_gists", False)
+                or getattr(args, "enumerate_webhooks", False)
             ) and client.warnings:
                 payload["warnings"] = list(client.warnings)
         else:  # pragma: no cover - argparse guarantees a valid module

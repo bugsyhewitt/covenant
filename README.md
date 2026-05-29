@@ -584,6 +584,57 @@ Example `gists` array:
 }
 ```
 
+### Webhook enumeration (`--enumerate-webhooks`)
+
+Where keys tell you *how a credential persists* and gists tell you *what it has
+leaked*, webhooks tell you *where its events flow* — and that is both an
+**exfiltration** channel and an **SSRF** primitive. Pass `--enumerate-webhooks`
+to `validate-token` and covenant walks the organizations/groups/workspaces the
+token can reach (the same set surfaced by `--enumerate-orgs`) and, for each,
+lists its webhooks with a **read-only** query, adding a `webhooks` array:
+
+| SCM       | Endpoint walked                       | Scope       |
+|-----------|---------------------------------------|-------------|
+| GitHub    | `GET /orgs/{org}/hooks`               | `org`       |
+| GitLab    | `GET /api/v4/groups/{id}/hooks`       | `group`     |
+| Bitbucket | `GET /2.0/workspaces/{slug}/hooks`    | `workspace` |
+
+Why this matters for recon: an org/group/workspace webhook POSTs every matching
+event — pushes, pull/merge requests, membership changes — to a configured URL.
+That URL is a **data-exfiltration** destination (the payloads carry repo content
+and metadata) and, when it points at internal infrastructure, an **SSRF**
+target. A captured token that can read or edit these hooks can quietly redirect
+or clone the event stream, so the destination URL is exactly the blast-radius
+signal an operator needs.
+
+Each entry is normalized to `{"scope", "owner", "id", "url", "events",
+"active"}`, where `url` is the hook's destination and `events` is the normalized
+list of subscribed event types (GitLab's per-event boolean flags are collapsed
+into this list). **The hook SECRET is never requested or echoed** — covenant
+surfaces the destination, not the signing key. The walk is bounded by the same
+`--max-pages` flag and honors the scope guardrail and the automatic rate-limit
+retry/backoff. Like the other `--enumerate-*` flags the feature is purely
+additive (all four may be combined): without the flag the output is unchanged,
+and with it the v0.1 `scopes`/`user`/`admin` fields are untouched — only the
+`webhooks` array is added.
+
+```bash
+covenant github validate-token \
+  --scope-file scope.txt \
+  --enumerate-webhooks \
+  --token-env COVENANT_TOKEN
+```
+
+Example `webhooks` array:
+
+```json
+{
+  "webhooks": [
+    { "scope": "org", "owner": "acme-corp", "id": 100, "url": "https://hooks.example.com/acme-corp", "events": ["push", "pull_request"], "active": true }
+  ]
+}
+```
+
 ## Usage — one example per SCM
 
 GitHub repo recon:

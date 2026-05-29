@@ -276,6 +276,27 @@ class _GitHubHandler(BaseHTTPRequestHandler):
                     },
                 ],
             )
+        elif parsed.path.startswith("/orgs/") and parsed.path.endswith("/hooks"):
+            # Org-webhook enumeration (--enumerate-webhooks). The config.url is
+            # the exfil/SSRF destination; config.secret is intentionally NOT
+            # included (the real API never returns it and covenant must not echo
+            # it). Each reachable org returns one hook.
+            owner = parsed.path.split("/")[2]
+            self._json(
+                200,
+                [
+                    {
+                        "id": 100,
+                        "active": True,
+                        "events": ["push", "pull_request"],
+                        "config": {
+                            "url": f"https://hooks.example.com/{owner}",
+                            "content_type": "json",
+                            "secret": "********",
+                        },
+                    },
+                ],
+            )
         elif parsed.path == "/user/orgs":
             # Org/blast-radius enumeration (--enumerate-orgs). Supports the
             # MULTIPAGE_PREFIX is not relevant here (no query); serve a single
@@ -457,6 +478,28 @@ class _GitLabHandler(BaseHTTPRequestHandler):
                         "visibility": "private",
                         "web_url": "https://gitlab.com/-/snippets/52",
                         "file_name": ".env",
+                    },
+                ],
+                headers={"X-Page": "1", "X-Next-Page": "", "X-Total-Pages": "1"},
+            )
+        elif parsed.path.startswith("/api/v4/groups/") and parsed.path.endswith(
+            "/hooks"
+        ):
+            # Group-webhook enumeration (--enumerate-webhooks). GitLab encodes
+            # subscribed events as per-event boolean flags; the hook `token`
+            # (the secret) is intentionally NOT included.
+            from urllib.parse import unquote
+
+            owner = unquote(parsed.path.split("/")[4])
+            self._json(
+                200,
+                [
+                    {
+                        "id": 200,
+                        "url": f"https://hooks.example.com/{owner}",
+                        "push_events": True,
+                        "merge_requests_events": True,
+                        "issues_events": False,
                     },
                 ],
                 headers={"X-Page": "1", "X-Next-Page": "", "X-Total-Pages": "1"},
@@ -666,6 +709,27 @@ class _BitbucketHandler(BaseHTTPRequestHandler):
                         },
                     ],
                     "size": 2,
+                },
+            )
+        elif parsed.path.startswith("/2.0/workspaces/") and parsed.path.endswith(
+            "/hooks"
+        ):
+            # Workspace-webhook enumeration (--enumerate-webhooks). Bitbucket
+            # returns the subscribed events as an array directly; the hook
+            # secret is intentionally NOT included.
+            owner = parsed.path.split("/")[3]
+            self._json(
+                200,
+                {
+                    "values": [
+                        {
+                            "uuid": f"{{hook-{owner}}}",
+                            "url": f"https://hooks.example.com/{owner}",
+                            "active": True,
+                            "events": ["repo:push", "pullrequest:created"],
+                        },
+                    ],
+                    "size": 1,
                 },
             )
         elif parsed.path == "/2.0/workspaces":
