@@ -635,6 +635,54 @@ Example `webhooks` array:
 }
 ```
 
+### Deploy-key enumeration (`--enumerate-deploy-keys`)
+
+Where `--enumerate-keys` covers the keys on the *account*, `--enumerate-deploy-keys`
+covers the keys bolted onto individual *repositories*. A **deploy key** is an SSH
+key scoped to a single repo, often with **write** access, that grants Git access
+independent of any human credential — it survives a password reset or an
+off-boarding, which makes a writable one a classic **persistence** and
+**supply-chain** foothold (an attacker pushes to the repo *as the repo*). Pass
+`--enumerate-deploy-keys` to `validate-token` and covenant walks the repositories
+the token can reach and, for each, lists its deploy keys with a **read-only**
+query, adding a `deploy_keys` array:
+
+| SCM       | Repos walked                          | Keys endpoint                                  |
+|-----------|---------------------------------------|------------------------------------------------|
+| GitHub    | `GET /user/repos`                     | `GET /repos/{owner}/{repo}/keys`               |
+| GitLab    | `GET /api/v4/projects?membership=true`| `GET /api/v4/projects/{id}/deploy_keys`        |
+| Bitbucket | `GET /2.0/repositories?role=member`   | `GET /2.0/repositories/{full_name}/deploy-keys`|
+
+Each entry is normalized to `{"repo", "id", "title", "read_only", "fingerprint"}`.
+`read_only` is the decisive blast-radius signal — `false` means the key can
+**push**. GitHub returns it directly; GitLab's `can_push` is inverted into it
+(`read_only == not can_push`); Bitbucket Cloud access keys are read-only by
+design, so `read_only` is always `true` there and the signal is the key's
+existence and reach rather than a push flag. **Only PUBLIC key metadata is
+shown** — covenant never reads private key material (the APIs do not expose it).
+The walk is bounded by the same `--max-pages` flag and honors the scope guardrail
+and the automatic rate-limit retry/backoff. Like the other `--enumerate-*` flags
+the feature is purely additive (all may be combined): without the flag the output
+is unchanged, and with it the v0.1 `scopes`/`user`/`admin` fields are untouched —
+only the `deploy_keys` array is added.
+
+```bash
+covenant github validate-token \
+  --scope-file scope.txt \
+  --enumerate-deploy-keys \
+  --token-env COVENANT_TOKEN
+```
+
+Example `deploy_keys` array:
+
+```json
+{
+  "deploy_keys": [
+    { "repo": "acme-corp/spellbook", "id": 300, "title": "ci-deploy", "read_only": false, "fingerprint": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA deploy" }
+  ]
+}
+```
+
 ## Usage — one example per SCM
 
 GitHub repo recon:

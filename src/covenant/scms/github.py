@@ -269,6 +269,75 @@ class GitHubClient(BaseSCMClient):
                 )
         return results
 
+    def enumerate_deploy_keys(
+        self, max_pages: int = DEFAULT_MAX_PAGES
+    ) -> list[dict]:
+        """List the deploy keys on the repos this token can reach (persistence).
+
+        A *deploy key* is an SSH key bolted onto a single repository rather than
+        a user account: it grants Git access (often **write** access) to that one
+        repo, independent of any human's credentials, and survives a user's
+        password reset or off-boarding. That makes it a prime persistence and
+        supply-chain foothold — a writable deploy key lets an attacker push to
+        the repo as the repo itself. This enumeration is the repo-scoped
+        complement to :meth:`enumerate_keys` (which covers the *account's* SSH/GPG
+        keys): it walks the repositories the token can reach (``GET /user/repos``)
+        and, for each, lists ``GET /repos/{owner}/{repo}/keys``, returning a
+        normalized list of ``{"repo", "id", "title", "read_only", "fingerprint"}``
+        dicts. ``read_only`` is the decisive signal — ``False`` means the key can
+        push. Only PUBLIC key metadata is returned; covenant never reads private
+        key material (the API does not expose it).
+        """
+        results: list[dict] = []
+        for repo in self._reachable_repos(max_pages=max_pages):
+            full_name = repo
+            for resp in self._get_paginated(
+                f"/repos/{full_name}/keys",
+                params={"per_page": 100},
+                max_pages=max_pages,
+                next_request=_next_link,
+            ):
+                body = resp.json()
+                if not isinstance(body, list):
+                    continue
+                for item in body:
+                    key_id = item.get("id")
+                    if key_id is None:
+                        continue
+                    results.append(
+                        {
+                            "repo": full_name,
+                            "id": key_id,
+                            "title": item.get("title"),
+                            "read_only": bool(item.get("read_only", True)),
+                            "fingerprint": item.get("key"),
+                        }
+                    )
+        return results
+
+    def _reachable_repos(self, max_pages: int = DEFAULT_MAX_PAGES) -> list[str]:
+        """Return the ``owner/name`` full names of repos this token can reach.
+
+        Walks ``GET /user/repos`` (the repositories the authenticated user has
+        access to) with the shared paginator. Used by
+        :meth:`enumerate_deploy_keys` to know which repos to inspect.
+        """
+        names: list[str] = []
+        for resp in self._get_paginated(
+            "/user/repos",
+            params={"per_page": 100},
+            max_pages=max_pages,
+            next_request=_next_link,
+        ):
+            body = resp.json()
+            if not isinstance(body, list):
+                continue
+            for item in body:
+                full_name = item.get("full_name")
+                if full_name:
+                    names.append(full_name)
+        return names
+
     def enumerate_webhooks(self, max_pages: int = DEFAULT_MAX_PAGES) -> list[dict]:
         """List the org-level webhooks this token can reach (exfil/SSRF surface).
 

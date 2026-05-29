@@ -273,6 +273,66 @@ class BitbucketClient(BaseSCMClient):
                 )
         return results
 
+    def enumerate_deploy_keys(
+        self, max_pages: int = DEFAULT_MAX_PAGES
+    ) -> list[dict]:
+        """List the deploy keys on the repos this token can reach (persistence).
+
+        Bitbucket Cloud's *access key* is the repo-scoped SSH key analogue of a
+        deploy key — the repo-scoped complement to the account keys surfaced by
+        :meth:`enumerate_keys`. We walk the repositories the token is a member of
+        (``GET /2.0/repositories?role=member``) and, for each, list
+        ``GET /2.0/repositories/{full_name}/deploy-keys``, returning the same
+        normalized ``{"repo", "id", "title", "read_only", "fingerprint"}`` shape
+        as the other SCMs. Bitbucket Cloud access keys are **read-only** by
+        design (there is no per-key push toggle), so ``read_only`` is always
+        ``True`` here — the signal is the existence and reach of the key, not a
+        push flag. Only PUBLIC key metadata is returned; private key material is
+        never read.
+        """
+        results: list[dict] = []
+        for full_name in self._reachable_repos(max_pages=max_pages):
+            for resp in self._get_paginated(
+                f"/2.0/repositories/{full_name}/deploy-keys",
+                params={"pagelen": 100},
+                max_pages=max_pages,
+                next_request=_bitbucket_next,
+            ):
+                for item in resp.json().get("values", []):
+                    key_id = item.get("id") or item.get("uuid")
+                    if key_id is None:
+                        continue
+                    results.append(
+                        {
+                            "repo": full_name,
+                            "id": key_id,
+                            "title": item.get("label") or item.get("comment"),
+                            "read_only": True,
+                            "fingerprint": item.get("key"),
+                        }
+                    )
+        return results
+
+    def _reachable_repos(self, max_pages: int = DEFAULT_MAX_PAGES) -> list[str]:
+        """Return the ``workspace/repo`` full names this token is a member of.
+
+        Walks ``GET /2.0/repositories?role=member`` with the shared
+        ``next``-envelope paginator. Used by :meth:`enumerate_deploy_keys` to
+        know which repos' deploy keys to inspect.
+        """
+        names: list[str] = []
+        for resp in self._get_paginated(
+            "/2.0/repositories",
+            params={"role": "member", "pagelen": 100},
+            max_pages=max_pages,
+            next_request=_bitbucket_next,
+        ):
+            for item in resp.json().get("values", []):
+                full_name = item.get("full_name")
+                if full_name:
+                    names.append(full_name)
+        return names
+
     def enumerate_webhooks(self, max_pages: int = DEFAULT_MAX_PAGES) -> list[dict]:
         """List the workspace-level webhooks this token can reach (exfil/SSRF).
 
