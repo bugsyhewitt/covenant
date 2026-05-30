@@ -1628,6 +1628,95 @@ gate beside a stale rule that is installed but disabled):
 }
 ```
 
+### Webhook-configuration audit (`--audit-webhook`)
+
+Where `--enumerate-webhooks` **maps** the destination URLs of the
+org/group/workspace webhooks a token can reach (the exfil/SSRF surface — where
+event payloads are POSTed), `--audit-webhook` audits the defensive **posture**
+of each hook: the three controls that decide whether a captured-URL hook is
+actually trustable.
+
+| Finding                                        | What it means                                                                                                                                              |
+|------------------------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `has_secret: false`                            | The hook was wired with no HMAC shared secret. The receiver has no way to verify a POST really came from the SCM; an attacker who learns the URL can forge events and a captured payload can be silently replayed. |
+| `insecure_ssl: true`                           | The hook is configured with TLS certificate verification disabled. An attacker-in-the-middle on the delivery path can intercept, modify, or replay the payload, and a self-signed/expired/rogue cert at the destination silently authenticates. |
+| `active: true` + `wildcard_events: true`       | The hook subscribes to **every** event the org emits (`events: ["*"]`) on an active subscription — the widest possible exfiltration channel. A surgical hook lists only the events it needs. |
+
+Pass `--audit-webhook` to `validate-token` and covenant walks the
+orgs/groups/workspaces the token can reach with a **read-only** query, adding a
+`webhook_configuration` array — one entry per webhook.
+
+| SCM       | Endpoint(s)                                       | What's surfaced                                                                       |
+|-----------|---------------------------------------------------|---------------------------------------------------------------------------------------|
+| GitHub    | `GET /orgs/{org}/hooks`                           | per-hook `{has_secret, insecure_ssl, active, events, wildcard_events}`                |
+| GitLab    | *no equivalent — empty result + an explanatory `warnings` note*                       | n/a |
+| Bitbucket | *no equivalent — empty result + an explanatory `warnings` note*                       | n/a |
+
+Each entry is normalized to `{"scope", "owner", "id", "url", "has_secret",
+"insecure_ssl", "active", "events", "wildcard_events"}`. `wildcard_events` is
+the convenience boolean covenant derives from `"*" in events` so the operator
+can triage at a glance.
+
+> **Provider parity caveat.** GitLab's group-hook API does not expose a uniform
+> per-hook posture record covering secret presence, TLS verification, and event
+> scope to a recon-grade token, and Bitbucket Cloud's workspace-hook API
+> exposes neither a per-hook secret-presence boolean nor a TLS-verification
+> flag (Bitbucket gates delivery on a provider IP allow-list instead). The
+> audit therefore returns an empty `webhook_configuration` array on those SCMs
+> and records a non-fatal `warnings` note so the empty result is not misread
+> as a clean bill of health.
+
+> **The secret value is never echoed.** GitHub exposes `config.secret` as a
+> `"********"` placeholder when one is configured and omits the field entirely
+> when it is not. covenant surfaces ONLY the boolean PRESENCE (`has_secret`),
+> never the placeholder, the URL's query string, or any header — the audit is
+> not itself a new copy of the leak. The walk is bounded by the same
+> `--max-pages` flag and honors the scope guardrail and automatic rate-limit
+> retry/backoff. Like the other `--enumerate-*`/`--audit-*` flags the feature
+> is purely additive (all may be combined): without the flag the output is
+> unchanged, and with it the v0.1 `scopes`/`user`/`admin` fields are untouched
+> — only the `webhook_configuration` array is added.
+
+```bash
+covenant github validate-token \
+  --scope-file scope.txt \
+  --audit-webhook \
+  --token-env COVENANT_TOKEN
+```
+
+Example `webhook_configuration` array (one strongly-posture hook beside a
+weakly-posture one — no secret, TLS verification disabled, wildcard event
+scope):
+
+```json
+{
+  "webhook_configuration": [
+    {
+      "scope": "org",
+      "owner": "acme-corp",
+      "id": 100,
+      "url": "https://hooks.example.com/acme-corp",
+      "has_secret": true,
+      "insecure_ssl": false,
+      "active": true,
+      "events": ["push", "pull_request"],
+      "wildcard_events": false
+    },
+    {
+      "scope": "org",
+      "owner": "wizards-inc",
+      "id": 100,
+      "url": "https://hooks.example.com/wizards-inc",
+      "has_secret": false,
+      "insecure_ssl": true,
+      "active": true,
+      "events": ["*"],
+      "wildcard_events": true
+    }
+  ]
+}
+```
+
 ### Member enumeration (`--enumerate-members`)
 
 Where the rest of the `--enumerate-*` family maps what *this* token reaches (its

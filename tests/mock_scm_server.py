@@ -277,26 +277,54 @@ class _GitHubHandler(BaseHTTPRequestHandler):
                 ],
             )
         elif parsed.path.startswith("/orgs/") and parsed.path.endswith("/hooks"):
-            # Org-webhook enumeration (--enumerate-webhooks). The config.url is
-            # the exfil/SSRF destination; config.secret is intentionally NOT
-            # included (the real API never returns it and covenant must not echo
-            # it). Each reachable org returns one hook.
+            # Org-webhook enumeration (--enumerate-webhooks) AND posture audit
+            # (--audit-webhook). The config.url is the exfil/SSRF destination;
+            # GitHub returns ``config.secret`` as the ``"********"`` placeholder
+            # when one is configured and OMITS the field when it is not, so
+            # covenant's audit must distinguish those two cases. Each reachable
+            # org returns one hook, configured to exercise the audit:
+            #   * acme-corp: STRONG posture — HMAC secret set
+            #     (``"********"``), ``insecure_ssl="0"`` (TLS verified), a
+            #     narrow event subscription, active=true.
+            #   * wizards-inc: WEAK posture — no ``secret`` key in config
+            #     (the API omits it when none is configured),
+            #     ``insecure_ssl="1"`` (TLS verification disabled), and a
+            #     wildcard ``events=["*"]`` subscription on an active hook —
+            #     the three high-signal findings the audit reports.
             owner = parsed.path.split("/")[2]
-            self._json(
-                200,
-                [
-                    {
-                        "id": 100,
-                        "active": True,
-                        "events": ["push", "pull_request"],
-                        "config": {
-                            "url": f"https://hooks.example.com/{owner}",
-                            "content_type": "json",
-                            "secret": "********",
+            if owner == "acme-corp":
+                self._json(
+                    200,
+                    [
+                        {
+                            "id": 100,
+                            "active": True,
+                            "events": ["push", "pull_request"],
+                            "config": {
+                                "url": f"https://hooks.example.com/{owner}",
+                                "content_type": "json",
+                                "secret": "********",
+                                "insecure_ssl": "0",
+                            },
                         },
-                    },
-                ],
-            )
+                    ],
+                )
+            else:
+                self._json(
+                    200,
+                    [
+                        {
+                            "id": 100,
+                            "active": True,
+                            "events": ["*"],
+                            "config": {
+                                "url": f"https://hooks.example.com/{owner}",
+                                "content_type": "json",
+                                "insecure_ssl": "1",
+                            },
+                        },
+                    ],
+                )
         elif parsed.path == "/user/repos":
             # Repo listing used by deploy-key enumeration
             # (--enumerate-deploy-keys). Two reachable repos.

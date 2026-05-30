@@ -464,6 +464,41 @@ def _build_parser() -> argparse.ArgumentParser:
             ),
         )
         token.add_argument(
+            "--audit-webhook",
+            action="store_true",
+            default=False,
+            dest="audit_webhook",
+            help=(
+                "additionally audit the SECURITY POSTURE of the org/group/"
+                "workspace webhook configurations this token can reach "
+                "(GitHub org webhooks) via a read-only query; adds a "
+                "'webhook_configuration' array of {scope, owner, id, url, "
+                "has_secret, insecure_ssl, active, events, wildcard_events} "
+                "entries. Where --enumerate-webhooks maps the destination "
+                "URLs (the exfil/SSRF surface — where event payloads land), "
+                "this audits whether each hook was wired with the controls "
+                "that decide whether a captured hook is actually trustable: "
+                "has_secret=false (no HMAC, so the receiver cannot verify "
+                "the POST came from the SCM and an attacker who learns the "
+                "URL can forge events), insecure_ssl=true (TLS verification "
+                "disabled, so an attacker-in-the-middle can intercept or "
+                "modify the payload and a rogue cert silently authenticates), "
+                "and an active hook with wildcard_events=true (events=['*'] "
+                "— the broadest event subscription, the widest exfil channel). "
+                "GitHub does not return the secret value itself (only a "
+                "'********' placeholder when one is set); covenant surfaces "
+                "ONLY the boolean PRESENCE, never the placeholder, the URL's "
+                "query string, or any header. GitLab (group-hook API does "
+                "not expose a uniform per-hook posture record to a recon-"
+                "grade token) and Bitbucket Cloud (workspace-hooks expose "
+                "neither a per-hook secret-presence boolean nor a TLS-"
+                "verification flag) have no equivalent, so the result is "
+                "empty there with an explanatory warning. Read-only; never "
+                "creates, edits, deletes, pings, or otherwise modifies a "
+                "webhook."
+            ),
+        )
+        token.add_argument(
             "--audit-repo-visibility",
             action="store_true",
             default=False,
@@ -1093,6 +1128,19 @@ def main(argv: list[str] | None = None) -> int:
                 payload["deployment_protection"] = (
                     client.audit_deployment_protection(max_pages=max_pages)
                 )
+            # Optional webhook-configuration posture audit. Read-only,
+            # additive: the v0.1 validate-token fields are untouched and the
+            # 'webhook_configuration' array only appears when --audit-webhook
+            # is requested. Where --enumerate-webhooks maps the destination
+            # URLs, this audits whether each hook is wired with the controls
+            # that make a captured-URL hook actually trustable: HMAC secret
+            # presence, TLS verification, and the event-subscription scope.
+            # Only the boolean presence of the secret is surfaced, never the
+            # API's '********' placeholder.
+            if getattr(args, "audit_webhook", False):
+                payload["webhook_configuration"] = client.audit_webhook(
+                    max_pages=max_pages
+                )
             # Optional repo-visibility audit. Read-only, additive: the v0.1
             # validate-token fields are untouched and the 'repo_visibility'
             # array only appears when --audit-repo-visibility is requested.
@@ -1303,6 +1351,7 @@ def main(argv: list[str] | None = None) -> int:
                 or getattr(args, "enumerate_runners", False)
                 or getattr(args, "audit_actions_environments", False)
                 or getattr(args, "audit_deployment_protection", False)
+                or getattr(args, "audit_webhook", False)
                 or getattr(args, "audit_repo_visibility", False)
                 or getattr(args, "audit_codeowners", False)
                 or getattr(args, "audit_dependabot_alerts", False)
