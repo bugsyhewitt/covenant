@@ -1717,6 +1717,91 @@ scope):
 }
 ```
 
+### IP-allowlist perimeter audit (`--audit-ip-allowlist`)
+
+Where the rest of the `--audit-*` family reports **repo-internal** posture
+(branch protection, environment gates, webhook hygiene, CODEOWNERS coverage),
+`--audit-ip-allowlist` reports the **org-level network perimeter** — the
+GitHub IP-allowlist setting that gates which source IPs may authenticate to
+the org's API/Git surface, and the often-overlooked installed-apps gate that
+is off by default even when the org-wide allowlist itself is on. A captured
+token authenticating from an unexpected source IP, or a compromised GitHub
+App reaching the org from the vendor's network, is exactly the threat this
+perimeter defends against; a missing or half-configured allowlist leaves
+every other gate exposed to any source IP a leaked token can dial in from.
+The decisive high-signal findings:
+
+* `ip_allow_list_enabled=false` — the org has no IP perimeter at all: a
+  token leaked to a coffee-shop laptop, a third-party CI runner, or an
+  attacker-controlled host authenticates from any IP without friction. The
+  single highest-signal finding the audit surfaces.
+* `ip_allow_list_enabled_for_installed_apps=false` — even when the org-wide
+  allowlist is on, installed GitHub Apps are by **default not gated** by it:
+  an attacker who compromises an app's installation token (or wires a
+  malicious app the org installs) reaches the org from the app vendor's
+  network, bypassing the perimeter the org operator thought they had
+  configured. A frequently-overlooked gap.
+
+Pass `--audit-ip-allowlist` to `validate-token` and covenant walks the orgs
+the token can reach and, for each, GETs `/orgs/{org}` — the same per-org
+metadata endpoint the rest of the client already relies on. Each org is
+normalized to:
+
+```json
+{
+  "scope": "org",
+  "owner": "acme-corp",
+  "ip_allow_list_enabled": true,
+  "ip_allow_list_enabled_for_installed_apps": true
+}
+```
+
+The boolean fields fall back to `false` when the API omits them (older orgs,
+free plans where the feature is unavailable, or a recon-grade token without
+admin:org scope), so a missing field never silently masquerades as a clean
+bill of health. The allowlist **entries themselves** are deliberately **not
+echoed** — listing them requires the org-admin GraphQL endpoint, and the
+entry CIDRs (vendor netblocks, office subnets, VPN egress ranges) are
+sensitive operational metadata that recon-grade access should not exfiltrate;
+the **boolean posture** is the audit signal. An org whose metadata endpoint
+answers 403/404 is skipped — the audit returns posture for the orgs it CAN
+read rather than aborting on the first 404. GitLab (the IP-perimeter setting
+lives at the instance / SAML-SSO level, not a per-group field a recon-grade
+token can read) and Bitbucket Cloud (the workspace IP allowlist is admin-UI
+only with no public REST endpoint) have no equivalent surface, so the result
+is empty there with an explanatory `warnings` entry so the empty list is not
+misread as a clean bill of health. Read-only — covenant only GETs org
+metadata; never enables, disables, or edits an allowlist entry.
+
+```bash
+covenant github validate-token \
+  --scope-file scope.txt \
+  --audit-ip-allowlist \
+  --token-env COVENANT_TOKEN
+```
+
+Example `ip_allowlist` array (one strong-posture org beside a weak-posture
+one — no perimeter at all):
+
+```json
+{
+  "ip_allowlist": [
+    {
+      "scope": "org",
+      "owner": "acme-corp",
+      "ip_allow_list_enabled": true,
+      "ip_allow_list_enabled_for_installed_apps": true
+    },
+    {
+      "scope": "org",
+      "owner": "wizards-inc",
+      "ip_allow_list_enabled": false,
+      "ip_allow_list_enabled_for_installed_apps": false
+    }
+  ]
+}
+```
+
 ### Member enumeration (`--enumerate-members`)
 
 Where the rest of the `--enumerate-*` family maps what *this* token reaches (its

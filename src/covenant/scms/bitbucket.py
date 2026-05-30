@@ -1166,6 +1166,33 @@ class BitbucketClient(BaseSCMClient):
         )
         return []
 
+    def audit_ip_allowlist(
+        self, max_pages: int = DEFAULT_MAX_PAGES
+    ) -> list[dict]:
+        """No-op on Bitbucket Cloud — workspace IP allowlist has no public REST API.
+
+        Bitbucket Cloud's workspace-level IP allowlist is a Premium-plan
+        admin-UI control with no public REST endpoint a recon-grade token
+        can query: there is no ``GET /workspaces/{slug}/ip-allowlist``
+        equivalent of the GitHub ``/orgs/{org}`` boolean fields the GitHub
+        audit reports. There is therefore nothing for covenant to surface
+        here at parity with the GitHub flag.
+
+        To keep the cross-provider audit uniform, the method exists and
+        returns an empty list (the same normalized shape as the GitHub
+        client would yield, just with no entries) and records a single
+        non-fatal ``warnings`` note so the operator understands the empty
+        result reflects a platform limitation, not a clean bill of health.
+        Read-only — it makes no request at all.
+        """
+        self.warnings.append(
+            "ip-allowlist audit is unsupported on Bitbucket Cloud "
+            "(the workspace IP-allowlist control is admin-UI only and "
+            "has no public REST endpoint a recon-grade token can query); "
+            "result is empty by design, not a clean bill of health"
+        )
+        return []
+
     def enumerate_members(self, max_pages: int = DEFAULT_MAX_PAGES) -> list[dict]:
         """List the other members of the workspaces this token can reach.
 

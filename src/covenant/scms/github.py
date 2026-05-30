@@ -1993,6 +1993,79 @@ class GitHubClient(BaseSCMClient):
             ),
         }
 
+    def audit_ip_allowlist(
+        self, max_pages: int = DEFAULT_MAX_PAGES
+    ) -> list[dict]:
+        """Audit each reachable org's GitHub IP allowlist posture.
+
+        GitHub's IP allowlist (an Enterprise Cloud / paid-org feature) is the
+        perimeter control that gates which source IPs may authenticate to the
+        org's API/Git surface and which IPs the org's installed GitHub Apps
+        are themselves allowed to call from. Where the other audit-* flags
+        report repo-internal posture (branch protection, environment gates,
+        webhook hygiene), this reports the org-level NETWORK perimeter — the
+        defense that, if disabled, leaves every other gate exposed to any
+        source IP a captured token can dial in from.
+
+        The high-signal findings are:
+
+        * ``ip_allow_list_enabled=False`` — the org has no IP perimeter at all:
+          a token leaked to a coffee-shop laptop, a third-party CI runner or
+          an attacker-controlled host authenticates from any IP without
+          friction. The single highest-signal finding the audit surfaces.
+        * ``ip_allow_list_enabled_for_installed_apps=False`` — even when the
+          org-wide allowlist is on, installed GitHub Apps are by default NOT
+          gated by it: an attacker who compromises an app's installation
+          token (or wires a malicious app the org installs) reaches the org
+          from the app vendor's network, bypassing the perimeter the org
+          operator thought they had configured. A frequently-overlooked gap.
+
+        Walks the orgs from :meth:`enumerate_orgs` and, for each, GETs
+        ``/orgs/{org}`` (the same per-org metadata endpoint the rest of the
+        client already relies on). Returns a normalized list of
+        ``{"scope", "owner", "ip_allow_list_enabled",
+        "ip_allow_list_enabled_for_installed_apps"}`` dicts. The boolean
+        fields fall back to ``False`` when the API omits them (older orgs,
+        free plans where the feature is unavailable, or a recon-grade token
+        without admin:org scope) so a missing field never silently masquerades
+        as a clean bill of health. The IP allowlist ENTRIES themselves are
+        deliberately not echoed — listing them requires the org-admin GraphQL
+        endpoint, and the entry CIDRs are sensitive operational metadata
+        (vendor netblocks, office subnets, VPN egress ranges) that recon-grade
+        access should not exfiltrate; the BOOLEAN posture is the audit signal.
+        An org whose ``/orgs/{org}`` answers 403/404 (token cannot see the org
+        metadata) is skipped — the audit returns the posture for the orgs it
+        CAN read rather than aborting the whole walk. Read-only — covenant
+        only GETs org metadata; never enables, disables, or edits an
+        allowlist entry.
+        """
+        results: list[dict] = []
+        for org in self.enumerate_orgs(max_pages=max_pages):
+            owner = org.get("name")
+            if not owner:
+                continue
+            try:
+                body = self._get(f"/orgs/{owner}").json()
+            except SCMError:
+                continue
+            if not isinstance(body, dict):
+                continue
+            results.append(
+                {
+                    "scope": "org",
+                    "owner": owner,
+                    "ip_allow_list_enabled": bool(
+                        body.get("ip_allow_list_enabled", False)
+                    ),
+                    "ip_allow_list_enabled_for_installed_apps": bool(
+                        body.get(
+                            "ip_allow_list_enabled_for_installed_apps", False
+                        )
+                    ),
+                }
+            )
+        return results
+
     def scan_commits(self, max_pages: int = DEFAULT_MAX_PAGES) -> list[dict]:
         """Collect commit metadata + messages from the repos this token reaches.
 

@@ -769,6 +769,43 @@ def _build_parser() -> argparse.ArgumentParser:
             ),
         )
         token.add_argument(
+            "--audit-ip-allowlist",
+            action="store_true",
+            default=False,
+            dest="audit_ip_allowlist",
+            help=(
+                "additionally audit the IP-allowlist NETWORK perimeter of the "
+                "orgs this token can reach (GitHub org IP-allowlist setting) "
+                "via a read-only query; adds an 'ip_allowlist' array of "
+                "{scope, owner, ip_allow_list_enabled, "
+                "ip_allow_list_enabled_for_installed_apps} entries. Where the "
+                "other --audit-* flags report repo-internal posture (branch "
+                "protection, environment gates, webhook hygiene), this "
+                "reports the org-level NETWORK perimeter — the defense that, "
+                "if disabled, leaves every other gate exposed to any source "
+                "IP a captured token can dial in from. The high-signal "
+                "findings are ip_allow_list_enabled=false (no perimeter at "
+                "all — a leaked token authenticates from any IP without "
+                "friction) and ip_allow_list_enabled_for_installed_apps=false "
+                "(even with the org-wide allowlist on, installed GitHub Apps "
+                "are by default NOT gated by it, so a compromised app "
+                "installation reaches the org from the vendor's network and "
+                "bypasses the perimeter). The allowlist ENTRIES themselves "
+                "are deliberately NOT echoed — entry CIDRs (vendor "
+                "netblocks, office subnets, VPN egress ranges) are sensitive "
+                "operational metadata that recon-grade access should not "
+                "exfiltrate; the boolean posture is the audit signal. An org "
+                "whose metadata endpoint answers 403/404 is skipped (not "
+                "fatal). GitLab (the IP-perimeter setting lives at the "
+                "instance / SAML-SSO level, not a per-group field a "
+                "recon-grade token can read) and Bitbucket Cloud (the "
+                "workspace IP-allowlist is admin-UI only with no public REST "
+                "endpoint) have no equivalent, so the result is empty there "
+                "with an explanatory warning. Read-only; never enables, "
+                "disables, or edits an allowlist entry."
+            ),
+        )
+        token.add_argument(
             "--enumerate-members",
             action="store_true",
             default=False,
@@ -863,7 +900,8 @@ def _build_parser() -> argparse.ArgumentParser:
                 f"maximum org/group/workspace/key/gist/webhook/deploy-key/"
                 f"branch-protection/actions-secret/repo-visibility/codeowners/"
                 f"dependabot-alert/package/secret-scanning/member/collaborator/"
-                f"commit/workflow-run/deployment-protection pages to walk when "
+                f"commit/workflow-run/deployment-protection/ip-allowlist "
+                f"pages to walk when "
                 f"an --enumerate-*, "
                 f"--audit-*, or --scan-commits flag is set (default: "
                 f"{DEFAULT_MAX_PAGES}, hard ceiling: {HARD_MAX_PAGES})."
@@ -1269,6 +1307,22 @@ def main(argv: list[str] | None = None) -> int:
                 payload["branch_rulesets"] = client.audit_branch_ruleset(
                     max_pages=max_pages
                 )
+            # Optional IP-allowlist perimeter audit. Read-only, additive: the
+            # v0.1 validate-token fields are untouched and the 'ip_allowlist'
+            # array only appears when --audit-ip-allowlist is requested.
+            # Reports the org-level NETWORK perimeter (GitHub IP allowlist
+            # enabled/disabled, plus the installed-apps gate that is off by
+            # default even when the allowlist itself is on) — the defense
+            # the repo-internal audits do not cover. Only boolean posture is
+            # surfaced; allowlist CIDR entries are deliberately never echoed
+            # (vendor netblocks / office subnets / VPN egress ranges are
+            # sensitive operational metadata). GitLab (instance/SSO scope)
+            # and Bitbucket Cloud (admin-UI only) have no recon-readable
+            # equivalent and return empty + warning.
+            if getattr(args, "audit_ip_allowlist", False):
+                payload["ip_allowlist"] = client.audit_ip_allowlist(
+                    max_pages=max_pages
+                )
             # Optional org/group/workspace member enumeration. Read-only,
             # additive: the v0.1 validate-token fields are untouched and the
             # 'members' array only appears when --enumerate-members is
@@ -1362,6 +1416,7 @@ def main(argv: list[str] | None = None) -> int:
                 or getattr(args, "audit_actions_permissions", False)
                 or getattr(args, "audit_workflow_runs", False)
                 or getattr(args, "audit_branch_ruleset", False)
+                or getattr(args, "audit_ip_allowlist", False)
                 or getattr(args, "enumerate_members", False)
                 or getattr(args, "enumerate_collaborators", False)
                 or getattr(args, "scan_commits", False)
