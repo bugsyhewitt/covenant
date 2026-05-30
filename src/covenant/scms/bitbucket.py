@@ -1074,6 +1074,35 @@ class BitbucketClient(BaseSCMClient):
                     )
         return results
 
+    def audit_branch_ruleset(
+        self, max_pages: int = DEFAULT_MAX_PAGES
+    ) -> list[dict]:
+        """No-op on Bitbucket Cloud, which has no branch-ruleset API.
+
+        Bitbucket Cloud's policy model for gating code landing on a branch is
+        delivered exclusively through ``branch-restrictions`` (already covered
+        by :meth:`audit_branch_protection`); it has no separate named
+        rule-collection object with an enforcement mode and a bypass-actor
+        list, the way GitHub branch rulesets do (and that GitLab push rules
+        approximate). There is therefore nothing for covenant to enumerate
+        here.
+
+        To keep the cross-provider audit uniform, the method exists and
+        returns an empty list (the same normalized shape as the other SCMs
+        would yield, just with no entries) and records a single non-fatal
+        ``warnings`` note so the operator understands the empty result
+        reflects a platform limitation, not a clean bill of health — and a
+        pointer to ``--audit-branch-protection`` which DOES cover Bitbucket
+        Cloud's equivalent surface. Read-only — it makes no request at all.
+        """
+        self.warnings.append(
+            "branch-ruleset audit is unsupported on Bitbucket Cloud "
+            "(no named-ruleset API; branch policy lives in "
+            "branch-restrictions, covered by --audit-branch-protection); "
+            "result is empty by design, not a clean bill of health"
+        )
+        return []
+
     def enumerate_members(self, max_pages: int = DEFAULT_MAX_PAGES) -> list[dict]:
         """List the other members of the workspaces this token can reach.
 

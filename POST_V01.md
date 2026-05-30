@@ -908,6 +908,75 @@ fuller blast-radius picture — rather than reopening closed items.
 > distinct unshipped surface (CI activity rather than environment policy)
 > and the natural next audit axis after the policy audits already shipped.
 
+### Branch-ruleset posture audit in validate-token (`--audit-branch-ruleset`) — IMPLEMENTED (Phase 2, Rotation 32)
+
+> **Status: shipped.** A read-only `--audit-branch-ruleset` flag on
+> `validate-token` audits the NEWER named-rule-collection posture that
+> coexists with classic branch protection. Where `--audit-branch-protection`
+> (Rotation 17) walks each protected branch's CLASSIC settings, this walks
+> the per-repo named-ruleset model — GitHub branch rulesets (2023+) and
+> GitLab push rules, the closest per-project rule-collection analogue — so a
+> posture audit that previously missed a ruleset-only configuration now sees
+> both rule models side by side. The high-signal findings: `enforcement` =
+> `disabled`/`evaluate` (a configured ruleset that is not actively blocking
+> is a paper tiger), `bypass_actor_count > 0` (every bypass actor is somebody
+> who routes around the rule), and a `rule_types` list missing core gates
+> (`pull_request` for required review, `required_signatures` for signed
+> commits, `non_fast_forward`/`deletion` for anti-force-push).
+>
+> It walks the repos the token can reach and, for each, surfaces a
+> normalized `branch_rulesets` array of `{repo, ruleset_id, name,
+> enforcement, target, rule_types, bypass_actor_count}` entries. GitHub
+> walks `GET /repos/{owner}/{repo}/rulesets` then
+> `GET /repos/{owner}/{repo}/rulesets/{id}` for the rule and bypass-actor
+> detail. GitLab maps the per-project `GET /api/v4/projects/{id}/push_rule`
+> object to the same normalized shape (one entry per project that has a
+> push rule), deriving `rule_types` from the truthy/non-null gate fields
+> (`commit_message_regex`/`branch_name_regex`/`prevent_secrets`/
+> `reject_unsigned_commits`/`member_check`/`max_file_size`/...), with
+> `enforcement="active"` (push rules have no dry-run mode), `target="branch"`
+> and `bypass_actor_count=0` (push rules have no bypass-actor allow-list).
+> Bitbucket Cloud has no named-ruleset API — its policy lives in
+> `branch-restrictions`, already covered by `--audit-branch-protection` — so
+> the method is a no-op that returns an empty list and records a single
+> non-fatal `warnings` note pointing at the equivalent flag, keeping the
+> cross-provider shape uniform.
+>
+> **The decisive invariant is posture-only disclosure**: bypass-actor
+> IDENTITIES are deliberately NEVER echoed (the count is the high-signal
+> blast-radius value; the names are not the audit's signal and a long list
+> would be noise), no rule parameter values (regex patterns, exact reviewer
+> counts inside `pull_request`, named required status checks) are surfaced
+> beyond the rule's TYPE label in `rule_types`, and no repository content is
+> read. The walk reuses the shared paginator, scope guardrail and
+> rate-limit backoff, is bounded by `--max-pages`, and composes with every
+> other `--enumerate-*`/`--audit-*` flag. A repo whose rulesets endpoint
+> answers 403/404 (rulesets unavailable on the plan, or token lacks the
+> admin scope) is skipped (not fatal). Purely additive: the v0.1
+> `scopes`/`user`/`admin` fields are untouched and the `branch_rulesets`
+> array appears only when the flag is set. Tests:
+> `tests/test_audit_branch_ruleset.py` covers each client's normalized
+> shape, the strong-vs-weak posture mapping on GitHub (active+core-gates+0
+> bypass vs evaluate+missing-gates+3 bypass), the GitLab push-rule
+> gate-field → `rule_types` reduction (only enabled gates appear, sorted),
+> the Bitbucket no-op + warning, the no-bypass-identity / no-rule-parameter
+> leak invariant across all three SCMs (a planted `shouldnotappear`
+> placeholder never reaches output), e2e presence-only-when-requested,
+> composition with the other audits, the scope-guardrail gate (exit 2),
+> and `--help` documentation. Full suite: 445 passing (431 baseline + 14
+> new), zero regressions. README updated with a "Branch-ruleset posture
+> audit" subsection.
+>
+> **Why this over `--audit-code-owners`:** the planned options were
+> `--audit-code-owners` and `--audit-branch-ruleset`, but a code/grep check
+> confirmed CODEOWNERS coverage is already shipped under the name
+> `--audit-codeowners` (Rotation 24) — it audits the same CODEOWNERS
+> coverage gap. `--audit-branch-ruleset` is the distinct unshipped surface
+> (the newer named-rule-collection model that COEXISTS with classic branch
+> protection and CODEOWNERS, rather than the CODEOWNERS file itself) and
+> the natural next defensive audit axis after the policy audits already
+> shipped.
+
 **Remaining candidate directions (unimplemented, for future laps):** OAuth-app /
 authorized-application enumeration (note its weak three-SCM parity, above), and
 team/sub-group enumeration.

@@ -1491,6 +1491,98 @@ class GitLabClient(BaseSCMClient):
                     )
         return results
 
+    def audit_branch_ruleset(
+        self, max_pages: int = DEFAULT_MAX_PAGES
+    ) -> list[dict]:
+        """Audit GitLab push rules across the projects this token can reach.
+
+        GitLab's analogue of GitHub's branch ruleset. GitLab has no first-party
+        endpoint named "ruleset", but it ships a per-project ``push_rule``
+        object that fills the same niche: a named collection of commit/branch
+        gates that are evaluated as ANY push lands, complementing the
+        protected-branches model. Where the existing
+        :meth:`audit_branch_protection` consumes ``reject_unsigned_commits``
+        in its required-signed-commits field, this audit surfaces the FULL
+        push-rule posture so an operator can see every gate the project has
+        configured (regex filters, branch-name patterns, file blocklists, the
+        member check) rather than only the signed-commits slice. The decisive
+        high-signal findings the audit surfaces are the same shape as GitHub's:
+        whether a push rule exists at all, and the SET of gates it actually
+        enforces — a push rule whose ``rule_types`` list is empty is a
+        configured-but-inactive control.
+
+        Walks the projects the token is a member of
+        (``GET /api/v4/projects?membership=true``) and for each requests
+        ``GET /api/v4/projects/{id}/push_rule``. A project with no push rule
+        configured (404), or one the token cannot read (403), is silently
+        skipped — the audit reports the push rules from the projects that DO
+        have one. Returns a normalized list of
+        ``{"repo", "ruleset_id", "name", "enforcement", "target", "rule_types",
+        "bypass_actor_count"}`` dicts for cross-SCM parity. ``ruleset_id`` is
+        the push-rule id; ``name`` is fixed to ``"push_rule"`` (GitLab does
+        not name push rules individually); ``enforcement`` is always
+        ``"active"`` (GitLab push rules have no dry-run mode); ``target`` is
+        ``"branch"``; ``rule_types`` is the sorted list of GATES the push rule
+        has enabled, derived from the truthy/non-null fields
+        (``commit_message_regex``, ``commit_message_negative_regex``,
+        ``branch_name_regex``, ``author_email_regex``, ``file_name_regex``,
+        ``max_file_size``, ``prevent_secrets``, ``reject_unsigned_commits``,
+        ``member_check``, ``reject_non_dco_commits``,
+        ``commit_committer_check``); and ``bypass_actor_count`` is always
+        ``0`` (push rules have no bypass-actor allow-list).
+
+        Only the SHAPE of the push rule (which gates are on) is surfaced —
+        the regex PATTERNS themselves and the ``max_file_size`` value are NOT
+        echoed (a pattern can be sensitive recon for the org's naming
+        convention; only "this gate is on" is the audit's signal). No project
+        content is read. Read-only — covenant never creates, edits, or
+        deletes a push rule.
+        """
+        # The boolean/non-null push_rule fields that signal an enabled gate.
+        # A field is counted as a rule_type iff its value is truthy (regex
+        # strings are non-empty, booleans are True, max_file_size is non-zero).
+        gate_fields = (
+            "commit_message_regex",
+            "commit_message_negative_regex",
+            "branch_name_regex",
+            "author_email_regex",
+            "file_name_regex",
+            "max_file_size",
+            "prevent_secrets",
+            "reject_unsigned_commits",
+            "member_check",
+            "reject_non_dco_commits",
+            "commit_committer_check",
+        )
+        results: list[dict] = []
+        for project in self._reachable_projects(max_pages=max_pages):
+            project_id = project["id"]
+            repo = project["repo"]
+            try:
+                detail = self._get(
+                    f"/api/v4/projects/{project_id}/push_rule"
+                ).json()
+            except SCMError:
+                # No push rule configured (404) or token lacks scope (403).
+                continue
+            if not isinstance(detail, dict):
+                continue
+            rule_types = sorted(
+                field for field in gate_fields if detail.get(field)
+            )
+            results.append(
+                {
+                    "repo": repo,
+                    "ruleset_id": detail.get("id"),
+                    "name": "push_rule",
+                    "enforcement": "active",
+                    "target": "branch",
+                    "rule_types": rule_types,
+                    "bypass_actor_count": 0,
+                }
+            )
+        return results
+
     def enumerate_members(self, max_pages: int = DEFAULT_MAX_PAGES) -> list[dict]:
         """List the other members of the groups this token can reach (lateral moves).
 
