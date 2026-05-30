@@ -540,6 +540,96 @@ class GitHubClient(BaseSCMClient):
                     )
         return results
 
+    def audit_webhook(self, max_pages: int = DEFAULT_MAX_PAGES) -> list[dict]:
+        """Audit the security posture of org-level webhook configurations.
+
+        Where :meth:`enumerate_webhooks` MAPS the destination URLs (the exfil/
+        SSRF surface — where event payloads are POSTed), this audits the
+        defensive POSTURE of each hook: whether the org operator wired the
+        hook with the three controls that decide whether a captured hook is
+        actually trustable.
+
+        The high-signal findings are:
+
+        * ``has_secret=False`` — the hook was configured without an HMAC
+          shared secret, so the receiving service has no way to verify the
+          POST really came from the SCM; an attacker who learns the URL can
+          forge events, and an attacker who later replays a captured payload
+          cannot be filtered out. GitHub does not return the secret value
+          itself; the API exposes ``config.secret`` as ``"********"`` when
+          one is set and omits the field entirely when it is not — covenant
+          surfaces only the BOOLEAN presence, never the placeholder.
+        * ``insecure_ssl=True`` — the hook delivery is configured with
+          ``insecure_ssl="1"``, which tells GitHub to skip TLS certificate
+          verification when POSTing to the destination. Any
+          attacker-in-the-middle on the path can intercept, modify, or
+          replay the event payload, and a self-signed/expired/rogue cert at
+          the destination silently authenticates.
+        * ``active=True`` with a wildcard ``events=["*"]`` scope — the hook
+          subscribes to EVERY event the org emits, giving the receiver the
+          widest possible exfiltration channel. A surgical hook lists only
+          the events it actually needs; a wildcard subscription on an
+          ``active`` hook is the high-signal over-scope.
+
+        Walks the orgs from :meth:`enumerate_orgs` and, for each, lists
+        ``GET /orgs/{org}/hooks`` with the shared paginator. Returns a
+        normalized list of ``{"scope", "owner", "id", "url", "has_secret",
+        "insecure_ssl", "active", "events", "wildcard_events"}`` dicts.
+        ``wildcard_events`` is the convenience boolean covenant derives from
+        ``"*" in events`` so the operator can triage at a glance without
+        re-scanning the event list. Read-only — covenant only GETs hook
+        metadata; never creates, edits, deletes, pings, or otherwise
+        modifies a webhook configuration.
+        """
+        results: list[dict] = []
+        for org in self.enumerate_orgs(max_pages=max_pages):
+            owner = org.get("name")
+            if not owner:
+                continue
+            for resp in self._get_paginated(
+                f"/orgs/{owner}/hooks",
+                params={"per_page": 100},
+                max_pages=max_pages,
+                next_request=_next_link,
+            ):
+                body = resp.json()
+                if not isinstance(body, list):
+                    continue
+                for item in body:
+                    hook_id = item.get("id")
+                    if hook_id is None:
+                        continue
+                    config = item.get("config") or {}
+                    if not isinstance(config, dict):
+                        config = {}
+                    events = item.get("events") or []
+                    if not isinstance(events, list):
+                        events = []
+                    # GitHub returns "1" when TLS verification is disabled and
+                    # "0" otherwise (the field is a string, not a bool, in the
+                    # raw API). Coerce to a boolean for the audit signal.
+                    insecure_raw = str(config.get("insecure_ssl", "0")).strip()
+                    insecure_ssl = insecure_raw == "1"
+                    # The API exposes ``secret`` as a "********" placeholder
+                    # when one is configured and omits the field when it is
+                    # not; the boolean presence is the signal, the placeholder
+                    # itself is never echoed.
+                    has_secret = bool(config.get("secret"))
+                    results.append(
+                        {
+                            "scope": "org",
+                            "owner": owner,
+                            "id": hook_id,
+                            "url": config.get("url"),
+                            "has_secret": has_secret,
+                            "insecure_ssl": insecure_ssl,
+                            "active": bool(item.get("active", False)),
+                            "events": list(events),
+                            "wildcard_events": "*" in events,
+                        }
+                    )
+        return results
+
     def enumerate_actions_secrets(
         self, max_pages: int = DEFAULT_MAX_PAGES
     ) -> list[dict]:

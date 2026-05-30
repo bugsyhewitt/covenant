@@ -628,6 +628,38 @@ class GitLabClient(BaseSCMClient):
                     )
         return results
 
+    def audit_webhook(self, max_pages: int = DEFAULT_MAX_PAGES) -> list[dict]:
+        """No-op on GitLab — the group-hook API does not surface the audit signals.
+
+        The GitHub flag audits three posture fields on each org webhook:
+        whether an HMAC secret is configured, whether TLS verification is
+        disabled (``insecure_ssl``), and whether the hook is an active
+        wildcard-event subscription. GitLab's group-hook API
+        (``GET /api/v4/groups/{id}/hooks``) does NOT expose a comparable
+        per-hook posture record: the analogous TLS-verification flag
+        (``enable_ssl_verification``) and the secret-token presence are
+        admin-restricted fields that a recon-grade token will not see
+        consistently across versions, and the per-event boolean flags are
+        already mapped by :meth:`enumerate_webhooks` as an ``events`` list
+        for the destination-URL audit. There is no uniform per-webhook
+        posture record for covenant to surface under this flag on GitLab.
+
+        To keep the cross-provider audit uniform, the method exists and
+        returns an empty list (the same normalized shape the GitHub client
+        would yield, just with no entries) and records a single non-fatal
+        ``warnings`` note so the operator understands the empty result
+        reflects a platform-model difference, not a clean bill of health.
+        Read-only — it makes no request at all.
+        """
+        self.warnings.append(
+            "webhook-configuration audit is unsupported on GitLab "
+            "(the group-hook API does not expose a uniform per-hook "
+            "posture record covering secret presence, TLS verification, "
+            "and event scope to a recon-grade token); result is empty by "
+            "design, not a clean bill of health"
+        )
+        return []
+
     def enumerate_actions_secrets(
         self, max_pages: int = DEFAULT_MAX_PAGES
     ) -> list[dict]:

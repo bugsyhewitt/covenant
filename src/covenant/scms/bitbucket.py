@@ -485,6 +485,38 @@ class BitbucketClient(BaseSCMClient):
                     )
         return results
 
+    def audit_webhook(self, max_pages: int = DEFAULT_MAX_PAGES) -> list[dict]:
+        """No-op on Bitbucket Cloud — workspace-hooks expose no posture record.
+
+        The GitHub flag audits three posture fields on each org webhook: HMAC
+        secret presence, TLS verification (``insecure_ssl``), and active
+        wildcard-event scope. Bitbucket Cloud's workspace-hook API
+        (``GET /2.0/workspaces/{slug}/hooks``) surfaces the destination URL,
+        the subscribed event keys, and an ``active`` flag (already mapped by
+        :meth:`enumerate_webhooks`) but does NOT expose a per-hook secret-
+        presence boolean or a TLS-verification flag — workspace webhooks
+        rely on the Bitbucket-provided IP allow-list of POST origins rather
+        than a per-hook HMAC the receiver verifies, and TLS verification at
+        the receiver is not a configurable per-hook posture. There is no
+        uniform per-webhook posture record for covenant to surface under
+        this flag on Bitbucket Cloud.
+
+        To keep the cross-provider audit uniform, the method exists and
+        returns an empty list (the same normalized shape the GitHub client
+        would yield, just with no entries) and records a single non-fatal
+        ``warnings`` note so the operator understands the empty result
+        reflects a platform-model difference, not a clean bill of health.
+        Read-only — it makes no request at all.
+        """
+        self.warnings.append(
+            "webhook-configuration audit is unsupported on Bitbucket Cloud "
+            "(the workspace-hook API does not expose per-hook secret "
+            "presence or TLS-verification posture; Bitbucket gates "
+            "delivery on a provider IP allow-list instead); result is "
+            "empty by design, not a clean bill of health"
+        )
+        return []
+
     def enumerate_actions_secrets(
         self, max_pages: int = DEFAULT_MAX_PAGES
     ) -> list[dict]:
