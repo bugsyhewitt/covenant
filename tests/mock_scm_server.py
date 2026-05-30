@@ -276,6 +276,42 @@ class _GitHubHandler(BaseHTTPRequestHandler):
                     },
                 ],
             )
+        elif (
+            parsed.path.startswith("/orgs/")
+            and parsed.path.count("/") == 2
+        ):
+            # Per-org metadata (used by --audit-ip-allowlist). GitHub exposes
+            # the IP-allowlist booleans on the same `/orgs/{org}` payload that
+            # carries the rest of the org's metadata. The two orgs exercise
+            # the audit's high-signal split:
+            #   * acme-corp: STRONG perimeter — allowlist enabled AND extended
+            #     to installed apps (the rare fully-locked posture);
+            #   * wizards-inc: WEAK perimeter — allowlist enabled at the
+            #     org level but NOT for installed apps (the frequently-
+            #     overlooked default-off gap covenant exists to surface),
+            #     reported alongside ip_allow_list_enabled=true so the
+            #     audit can show both fields independently.
+            owner = parsed.path.split("/")[2]
+            if owner == "acme-corp":
+                self._json(
+                    200,
+                    {
+                        "login": owner,
+                        "id": 1,
+                        "ip_allow_list_enabled": True,
+                        "ip_allow_list_enabled_for_installed_apps": True,
+                    },
+                )
+            else:
+                self._json(
+                    200,
+                    {
+                        "login": owner,
+                        "id": 2,
+                        "ip_allow_list_enabled": False,
+                        "ip_allow_list_enabled_for_installed_apps": False,
+                    },
+                )
         elif parsed.path.startswith("/orgs/") and parsed.path.endswith("/hooks"):
             # Org-webhook enumeration (--enumerate-webhooks) AND posture audit
             # (--audit-webhook). The config.url is the exfil/SSRF destination;

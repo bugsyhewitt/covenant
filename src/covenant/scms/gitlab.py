@@ -1646,6 +1646,36 @@ class GitLabClient(BaseSCMClient):
             )
         return results
 
+    def audit_ip_allowlist(
+        self, max_pages: int = DEFAULT_MAX_PAGES
+    ) -> list[dict]:
+        """No-op on GitLab — IP allowlisting lives at the instance level, not the group.
+
+        GitHub exposes an IP allowlist as a per-ORG control (the boolean
+        posture the GitHub audit surfaces). GitLab's analogous "allowed IP
+        ranges" perimeter is configured INSTANCE-wide on self-managed
+        GitLab via the admin Application Settings API, and on GitLab.com is
+        a Premium/Ultimate feature exposed only through the group SAML SSO
+        ``allowed_ips`` field that a recon-grade group-member token does not
+        see. There is no uniform per-group per-token-readable IP-perimeter
+        record covenant can surface here at parity with the GitHub flag.
+
+        To keep the cross-provider audit uniform, the method exists and
+        returns an empty list (the same normalized shape the GitHub client
+        would yield, just with no entries) and records a single non-fatal
+        ``warnings`` note so the operator understands the empty result
+        reflects a platform-model difference, not a clean bill of health.
+        Read-only — it makes no request at all.
+        """
+        self.warnings.append(
+            "ip-allowlist audit is unsupported on GitLab "
+            "(the IP-perimeter setting lives at the instance/SAML-SSO "
+            "level and is not exposed as a per-group field to a "
+            "recon-grade token); result is empty by design, not a clean "
+            "bill of health"
+        )
+        return []
+
     def enumerate_members(self, max_pages: int = DEFAULT_MAX_PAGES) -> list[dict]:
         """List the other members of the groups this token can reach (lateral moves).
 
