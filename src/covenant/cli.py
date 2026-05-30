@@ -672,6 +672,39 @@ def _build_parser() -> argparse.ArgumentParser:
             ),
         )
         token.add_argument(
+            "--audit-branch-ruleset",
+            action="store_true",
+            default=False,
+            dest="audit_branch_ruleset",
+            help=(
+                "additionally audit the named branch-ruleset / push-rule "
+                "posture of the repos this token can reach (GitHub branch "
+                "rulesets, GitLab push rules) via a read-only query; adds a "
+                "'branch_rulesets' array of {repo, ruleset_id, name, "
+                "enforcement, target, rule_types, bypass_actor_count} "
+                "entries. The newer/complementary rule-model counterpart to "
+                "--audit-branch-protection: where that one walks each "
+                "protected branch's CLASSIC settings, this surfaces the "
+                "POSTURE of the NEWER named-rule-collection model the two "
+                "coexist with — the high-signal findings are "
+                "enforcement='disabled'/'evaluate' (a configured ruleset "
+                "that does not actively block), bypass_actor_count > 0 "
+                "(somebody can route around the rule), and a rule_types "
+                "list missing core gates ('pull_request' / "
+                "'required_signatures' / 'non_fast_forward'). Only ruleset "
+                "POSTURE is surfaced — bypass-actor identities are NEVER "
+                "echoed (only the count is the signal), no rule parameter "
+                "values (regex patterns, exact reviewer counts) are read, "
+                "and no repository content is touched. A repo whose "
+                "rulesets endpoint answers 403/404 is skipped (not fatal). "
+                "Bitbucket Cloud has no named-ruleset API (its policy lives "
+                "in branch-restrictions, covered by "
+                "--audit-branch-protection); result is empty there with an "
+                "explanatory warning. Read-only; never creates, edits, or "
+                "deletes a ruleset."
+            ),
+        )
+        token.add_argument(
             "--enumerate-members",
             action="store_true",
             default=False,
@@ -1128,6 +1161,24 @@ def main(argv: list[str] | None = None) -> int:
                 payload["workflow_runs"] = client.audit_workflow_runs(
                     max_pages=max_pages
                 )
+            # Optional branch-ruleset / push-rule posture audit. Read-only,
+            # additive: the v0.1 validate-token fields are untouched and the
+            # 'branch_rulesets' array only appears when --audit-branch-ruleset
+            # is requested. Reports the posture of the NEWER named-rule-
+            # collection model that coexists with classic branch protection:
+            # enforcement mode (disabled/evaluate is a paper tiger),
+            # bypass-actor count (every actor is a route around the rule),
+            # and the SET of rule types present (a list missing pull_request
+            # / required_signatures / non_fast_forward is a coverage gap).
+            # Only ruleset POSTURE is surfaced — bypass-actor identities
+            # and rule parameter values (regex patterns, reviewer counts)
+            # are never echoed. Bitbucket Cloud has no named-ruleset API
+            # (returns empty + warning); a repo with rulesets unavailable
+            # is skipped.
+            if getattr(args, "audit_branch_ruleset", False):
+                payload["branch_rulesets"] = client.audit_branch_ruleset(
+                    max_pages=max_pages
+                )
             # Optional org/group/workspace member enumeration. Read-only,
             # additive: the v0.1 validate-token fields are untouched and the
             # 'members' array only appears when --enumerate-members is
@@ -1218,6 +1269,7 @@ def main(argv: list[str] | None = None) -> int:
                 or getattr(args, "audit_advisory_alerts", False)
                 or getattr(args, "audit_actions_permissions", False)
                 or getattr(args, "audit_workflow_runs", False)
+                or getattr(args, "audit_branch_ruleset", False)
                 or getattr(args, "enumerate_members", False)
                 or getattr(args, "enumerate_collaborators", False)
                 or getattr(args, "scan_commits", False)

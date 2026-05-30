@@ -1323,6 +1323,64 @@ the token's scope answers 403/404 and is **skipped** (not fatal). Only run
 the run saw are **never** fetched. Read-only; never re-runs, cancels, or
 dispatches a workflow.
 
+### Branch-ruleset posture audit (`--audit-branch-ruleset`)
+
+Where `--audit-branch-protection` walks each protected branch's **classic**
+settings, `--audit-branch-ruleset` surfaces the **newer named-rule-collection**
+model the two coexist with — GitHub branch rulesets (2023+) and GitLab push
+rules. A posture audit that only checks classic branch protection misses a
+ruleset-only configuration; this audit complements the existing one so the
+operator sees both rule models side by side. The decisive high-signal findings:
+
+* `enforcement="disabled"` or `"evaluate"` — a configured ruleset that is not
+  actively blocking is a paper tiger;
+* `bypass_actor_count > 0` — every bypass actor is somebody who can route
+  around the rule (a long list widens the bypass set); and
+* the `rule_types` list missing core gates (`pull_request` for required
+  review, `required_signatures` for signed commits,
+  `non_fast_forward`/`deletion` for anti-force-push) — a ruleset named "main
+  protection" whose rules don't include `pull_request` does not in fact
+  require review.
+
+Pass `--audit-branch-ruleset` to `validate-token` and covenant walks the repos
+the token can reach and, for each, lists its rulesets — GitHub
+`GET /repos/{owner}/{repo}/rulesets` (plus
+`GET /repos/{owner}/{repo}/rulesets/{id}` for the rule and bypass-actor
+detail), GitLab `GET /api/v4/projects/{id}/push_rule` (the per-project
+push-rule object, the closest analogue). Each ruleset is normalized to:
+
+```json
+{
+  "repo": "acme-corp/spellbook",
+  "ruleset_id": 600,
+  "name": "main-protection",
+  "enforcement": "active",
+  "target": "branch",
+  "rule_types": ["deletion", "non_fast_forward", "pull_request", "required_signatures"],
+  "bypass_actor_count": 0
+}
+```
+
+`rule_types` is the sorted, de-duplicated list of rule-type strings (GitHub's
+`pull_request` / `required_signatures` / `non_fast_forward` / `deletion` /
+`creation` / ...; GitLab's `commit_message_regex` / `branch_name_regex` /
+`prevent_secrets` / `reject_unsigned_commits` / `member_check` / ...) — the
+**shape** of the rule set, not the parameter values inside any one rule.
+
+Only ruleset **posture** is surfaced: bypass-actor **identities** are
+deliberately never echoed (only the count is the high-signal blast-radius
+value; a long list of names would be noise), no rule parameter values (regex
+patterns, exact reviewer counts, named required status checks) are surfaced
+beyond their presence in `rule_types`, and no repository content is read. A
+repo whose rulesets endpoint answers 403/404 (rulesets unavailable on the
+plan, or token lacks the admin scope) is **skipped** — the audit returns the
+rulesets from the repos it CAN read rather than aborting on the first 404.
+Bitbucket Cloud has no named-ruleset API (its policy lives in
+branch-restrictions, already covered by `--audit-branch-protection`); the
+result is empty there with an explanatory `warnings` entry so the empty list
+is not misread as a clean bill of health. Read-only — covenant never creates,
+edits, or deletes a ruleset.
+
 ### Self-hosted runner enumeration (`--enumerate-runners`)
 
 Where `--enumerate-actions-secrets` maps the *credential* surface that powers a

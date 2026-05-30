@@ -1686,6 +1686,122 @@ class GitHubClient(BaseSCMClient):
                     )
         return results
 
+    def audit_branch_ruleset(
+        self, max_pages: int = DEFAULT_MAX_PAGES
+    ) -> list[dict]:
+        """Audit GitHub branch rulesets across the repos this token can reach.
+
+        Branch rulesets are GitHub's 2023+ successor to classic branch
+        protection: a per-repo (or per-org) named collection of rules with an
+        ``enforcement`` mode (``active``/``evaluate``/``disabled``), a
+        ``target`` filter (``branch``/``tag``) and a per-ruleset
+        ``bypass_actors`` allow-list. Where :meth:`audit_branch_protection`
+        walks each protected branch's CLASSIC settings, this walks the NEWER
+        rule model — the two coexist on the same repo, so a posture audit that
+        only checks branch protection misses a ruleset-only configuration. The
+        decisive high-signal findings the audit surfaces:
+
+          * ``enforcement="disabled"`` or ``"evaluate"`` — a ruleset that
+            exists but is not actively blocking is a paper tiger;
+          * ``bypass_actor_count > 0`` — every bypass actor is somebody who
+            can route around the rule (a high count widens the bypass set);
+          * the ``rule_types`` list missing core gates (``pull_request`` for
+            required review, ``required_signatures`` for signed commits,
+            ``non_fast_forward``/``deletion`` for anti-force-push) — a ruleset
+            named "main protection" whose rules don't include ``pull_request``
+            does not in fact require review.
+
+        Walks the repos the token can reach (``GET /user/repos``), lists each
+        repo's rulesets (``GET /repos/{owner}/{repo}/rulesets``), and for each
+        ruleset fetches the detail
+        (``GET /repos/{owner}/{repo}/rulesets/{id}``) to read its rules and
+        bypass-actor list. Returns a normalized list of
+        ``{"repo", "ruleset_id", "name", "enforcement", "target", "rule_types",
+        "bypass_actor_count"}`` dicts. ``rule_types`` is a sorted, de-duplicated
+        list of the ``type`` strings GitHub reports for each rule
+        (``"pull_request"``, ``"required_signatures"``, ``"non_fast_forward"``,
+        ``"deletion"``, ``"creation"``, ``"update"``, ``"required_status_checks"``,
+        ...) — the *shape* of the rule set, not the parameter values inside any
+        one rule.
+
+        Only ruleset POSTURE metadata is surfaced: bypass-actor IDENTITIES are
+        deliberately NEVER echoed (the *count* is the high-signal blast-radius
+        value; the names are not the audit's signal and a long list would be
+        noise), no rule parameter values (regex patterns, exact reviewer counts
+        inside ``pull_request``, named required status checks) are surfaced
+        beyond their presence in ``rule_types``, and no repository content is
+        read. Read-only — covenant never creates, edits, or deletes a ruleset.
+        A repo whose rulesets endpoint answers 403/404 (rulesets unavailable
+        on the plan, or token lacks the admin scope) is skipped — the audit
+        returns the rulesets from the repos it CAN read rather than aborting
+        the whole audit on the first 404.
+        """
+        results: list[dict] = []
+        for full_name in self._reachable_repos(max_pages=max_pages):
+            try:
+                pages = list(
+                    self._get_paginated(
+                        f"/repos/{full_name}/rulesets",
+                        params={"per_page": 100},
+                        max_pages=max_pages,
+                        next_request=_next_link,
+                    )
+                )
+            except SCMError:
+                # Rulesets unavailable / token lacks scope -> skip this repo.
+                continue
+            for resp in pages:
+                body = resp.json()
+                if not isinstance(body, list):
+                    continue
+                for item in body:
+                    ruleset_id = item.get("id")
+                    if ruleset_id is None:
+                        continue
+                    detail = self._ruleset_detail(full_name, ruleset_id)
+                    if detail is None:
+                        continue
+                    results.append(detail)
+        return results
+
+    def _ruleset_detail(self, full_name: str, ruleset_id: int) -> dict | None:
+        """Fetch and normalize one ruleset's detail payload.
+
+        The listing endpoint omits ``rules`` and ``bypass_actors``, so we GET
+        the per-ruleset detail to read them. A detail-fetch failure (403/404)
+        is non-fatal: the ruleset is dropped from this audit cycle rather than
+        aborting the whole walk. Bypass actor IDENTITIES are deliberately not
+        echoed — only the count is the audit's signal.
+        """
+        try:
+            detail = self._get(
+                f"/repos/{full_name}/rulesets/{ruleset_id}"
+            ).json()
+        except SCMError:
+            return None
+        if not isinstance(detail, dict):
+            return None
+        rules = detail.get("rules") or []
+        rule_types = sorted(
+            {
+                r.get("type")
+                for r in rules
+                if isinstance(r, dict) and r.get("type")
+            }
+        )
+        bypass_actors = detail.get("bypass_actors") or []
+        return {
+            "repo": full_name,
+            "ruleset_id": ruleset_id,
+            "name": detail.get("name") or "",
+            "enforcement": detail.get("enforcement") or "disabled",
+            "target": detail.get("target") or "branch",
+            "rule_types": rule_types,
+            "bypass_actor_count": (
+                len(bypass_actors) if isinstance(bypass_actors, list) else 0
+            ),
+        }
+
     def scan_commits(self, max_pages: int = DEFAULT_MAX_PAGES) -> list[dict]:
         """Collect commit metadata + messages from the repos this token reaches.
 

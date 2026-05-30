@@ -481,6 +481,120 @@ class _GitHubHandler(BaseHTTPRequestHandler):
                 # grimoire: Actions disabled / token lacks scope.
                 self._json(404, {"message": "Not Found"})
         elif parsed.path.startswith("/repos/") and parsed.path.endswith(
+            "/rulesets"
+        ):
+            # Branch-ruleset posture audit (--audit-branch-ruleset). The
+            # spellbook repo exposes two rulesets: a STRONG one (active
+            # enforcement, core gates present, no bypass actors) and a WEAK
+            # one (evaluate enforcement, missing core gates, 3 bypass
+            # actors). The grimoire repo's rulesets endpoint answers 404
+            # (rulesets unavailable / token lacks admin scope) so covenant
+            # must SKIP it, not fail the whole audit. The listing endpoint
+            # omits per-ruleset rules + bypass_actors; the per-ruleset
+            # detail (handled below) supplies those.
+            repo = "/".join(parsed.path.split("/")[2:4])
+            if repo.endswith("/spellbook"):
+                self._json(
+                    200,
+                    [
+                        {
+                            "id": 600,
+                            "name": "main-protection",
+                            "target": "branch",
+                            "enforcement": "active",
+                            "source_type": "Repository",
+                            "source": repo,
+                        },
+                        {
+                            "id": 601,
+                            "name": "weak-experiment",
+                            "target": "branch",
+                            "enforcement": "evaluate",
+                            "source_type": "Repository",
+                            "source": repo,
+                        },
+                    ],
+                )
+            else:
+                # grimoire: rulesets unavailable / token lacks admin scope.
+                self._json(404, {"message": "Not Found"})
+        elif "/rulesets/" in parsed.path and parsed.path.startswith("/repos/"):
+            # Per-ruleset detail (--audit-branch-ruleset). Returns the rules
+            # array and bypass_actors list the audit reads. The mock plants
+            # a no-credential-leak invariant in both bypass_actor and rule
+            # bodies (the "shouldnotappear" placeholder is in fields covenant
+            # is contractually obligated NOT to surface — bypass-actor
+            # identities and rule parameter values).
+            ruleset_id = parsed.path.rsplit("/", 1)[-1]
+            if ruleset_id == "600":
+                self._json(
+                    200,
+                    {
+                        "id": 600,
+                        "name": "main-protection",
+                        "target": "branch",
+                        "enforcement": "active",
+                        "bypass_actors": [],
+                        "rules": [
+                            {
+                                "type": "pull_request",
+                                "parameters": {
+                                    "required_approving_review_count": 2,
+                                    "dismiss_stale_reviews_on_push": True,
+                                },
+                            },
+                            {"type": "required_signatures"},
+                            {"type": "non_fast_forward"},
+                            {"type": "deletion"},
+                        ],
+                    },
+                )
+            elif ruleset_id == "601":
+                self._json(
+                    200,
+                    {
+                        "id": 601,
+                        "name": "weak-experiment",
+                        "target": "branch",
+                        "enforcement": "evaluate",
+                        "bypass_actors": [
+                            {
+                                "actor_id": 1,
+                                "actor_type": "Team",
+                                "bypass_mode": "always",
+                                # shouldnotappear: bypass-actor identity must
+                                # not be echoed by covenant (only the count).
+                                "name": "shouldnotappear-team",
+                            },
+                            {
+                                "actor_id": 2,
+                                "actor_type": "Integration",
+                                "bypass_mode": "always",
+                                "name": "shouldnotappear-bot",
+                            },
+                            {
+                                "actor_id": 3,
+                                "actor_type": "RepositoryRole",
+                                "bypass_mode": "pull_request",
+                                "name": "shouldnotappear-role",
+                            },
+                        ],
+                        "rules": [
+                            {
+                                "type": "creation",
+                                # shouldnotappear: rule parameter values must
+                                # not be echoed (only the rule TYPE is the
+                                # audit's signal).
+                                "parameters": {
+                                    "pattern": "shouldnotappear-regex",
+                                },
+                            },
+                        ],
+                    },
+                )
+            else:
+                self._json(404, {"message": "Not Found"})
+        elif parsed.path.startswith("/repos/") and parsed.path.endswith(
             "/actions/secrets"
         ):
             # Repo-level Actions secret-NAME enumeration
@@ -1161,9 +1275,33 @@ class _GitLabHandler(BaseHTTPRequestHandler):
         elif parsed.path.startswith("/api/v4/projects/") and parsed.path.endswith(
             "/push_rule"
         ):
-            # Project push rule (--audit-branch-protection). Unsigned commits are
-            # rejected (require_signed_commits true).
-            self._json(200, {"id": 1, "reject_unsigned_commits": True})
+            # Project push rule. Consumed by TWO audits:
+            #   * --audit-branch-protection reads `reject_unsigned_commits`
+            #     (require_signed_commits true)
+            #   * --audit-branch-ruleset reads the FULL gate set and reports
+            #     the sorted rule_types list — the audit surfaces only
+            #     which gates are ON, never the regex pattern values (which
+            #     could be sensitive recon for the org's naming convention).
+            # The `commit_message_regex` and `branch_name_regex` values are
+            # the "shouldnotappear" no-leak invariant for the ruleset audit:
+            # covenant must not echo these strings.
+            self._json(
+                200,
+                {
+                    "id": 1,
+                    "commit_message_regex": "shouldnotappear-msg-regex",
+                    "branch_name_regex": "shouldnotappear-branch-regex",
+                    "prevent_secrets": True,
+                    "reject_unsigned_commits": True,
+                    "member_check": True,
+                    "max_file_size": 100,
+                    "commit_message_negative_regex": None,
+                    "author_email_regex": None,
+                    "file_name_regex": None,
+                    "reject_non_dco_commits": False,
+                    "commit_committer_check": False,
+                },
+            )
         elif parsed.path.startswith("/api/v4/projects/") and parsed.path.endswith(
             "/deploy_keys"
         ):
