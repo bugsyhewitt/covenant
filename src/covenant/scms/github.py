@@ -798,6 +798,107 @@ class GitHubClient(BaseSCMClient):
                     )
         return results
 
+    def audit_deployment_protection(
+        self, max_pages: int = DEFAULT_MAX_PAGES
+    ) -> list[dict]:
+        """Audit CUSTOM deployment-protection rule apps on reachable repos.
+
+        Where :meth:`audit_actions_environments` reports the **built-in**
+        environment protection rules (required reviewers, wait timer, branch
+        policy), deployment protection rules are the **custom third-party
+        GitHub Apps** an environment delegates its deploy gate to. Each rule is
+        a separately-installed GitHub App that the environment consults before
+        a deployment proceeds; the app returns approve/reject and the
+        deployment lands or is held. That delegation is a supply-chain trust
+        bond: the third-party app *is* the gate, and any compromise of the app
+        (its hosting infrastructure, its credentials, its review logic) means
+        deploys to that environment pass automatically with no further human
+        review. Operators usually know the built-in reviewer/wait-timer policy
+        but lose track of which custom apps were ever installed as a gate, so
+        listing them surfaces the third parties that hold the deploy keys.
+        Conversely, an environment whose audit shows the gate has been
+        ``enabled=false``-toggled while still installed is a gate the operator
+        thinks they have but does not.
+
+        Walks the repositories the token can reach (``GET /user/repos``); for
+        each repo, lists its environments (``GET /repos/{owner}/{repo}/
+        environments``) and for each environment lists its custom deployment
+        protection rules (``GET /repos/{owner}/{repo}/environments/{env}/
+        deployment_protection_rules``). The response wraps the rules in
+        ``{"total_count", "custom_deployment_protection_rules": [...]}``; each
+        rule carries an ``id``, an ``enabled`` flag, and a nested ``app`` with
+        the third-party's ``id``/``slug``/``integration_url``. Returns a
+        normalized list of ``{"repo", "environment", "rule_id", "app_slug",
+        "app_id", "enabled"}`` dicts — one entry per installed custom rule. An
+        environment with no custom rules contributes nothing; an environment
+        whose listing endpoint answers 403/404 (token lacks admin reach) is
+        skipped (not fatal) so a partial-permission token still reports every
+        rule it can read. Only the rule METADATA and the gating app's
+        identity are surfaced — never the app's installation token, webhook
+        secret, or any credential. Read-only — only GETs policy metadata; never
+        installs, removes, enables, or disables a protection rule.
+        """
+        results: list[dict] = []
+        for full_name in self._reachable_repos(max_pages=max_pages):
+            # 1) List environments on the repo.
+            env_names: list[str] = []
+            for resp in self._get_paginated(
+                f"/repos/{full_name}/environments",
+                params={"per_page": 100},
+                max_pages=max_pages,
+                next_request=_next_link,
+            ):
+                body = resp.json()
+                if not isinstance(body, dict):
+                    continue
+                for env in body.get("environments", []):
+                    name = env.get("name")
+                    if name:
+                        env_names.append(name)
+            # 2) For each environment, list its custom deployment protection
+            # rules. A token without admin reach on the repo answers 403/404 —
+            # skip that environment, never abort the whole audit.
+            for env_name in env_names:
+                url = (
+                    f"{self.base_url}/repos/{full_name}"
+                    f"/environments/{env_name}/deployment_protection_rules"
+                )
+                resp = self._request_with_retry(url, None, self._headers())
+                if resp.status_code in (403, 404):
+                    continue
+                if resp.status_code == 401:
+                    raise SCMError(
+                        "authentication failed (401) — check the token"
+                    )
+                if resp.status_code >= 400:
+                    raise SCMError(
+                        f"{self.base_url} returned HTTP {resp.status_code} "
+                        f"for {full_name} environment {env_name} "
+                        f"deployment protection rules"
+                    )
+                body = resp.json()
+                if not isinstance(body, dict):
+                    continue
+                for rule in body.get(
+                    "custom_deployment_protection_rules", []
+                ):
+                    if not isinstance(rule, dict):
+                        continue
+                    app = rule.get("app") or {}
+                    if not isinstance(app, dict):
+                        app = {}
+                    results.append(
+                        {
+                            "repo": full_name,
+                            "environment": env_name,
+                            "rule_id": rule.get("id"),
+                            "app_slug": app.get("slug"),
+                            "app_id": app.get("id"),
+                            "enabled": bool(rule.get("enabled", False)),
+                        }
+                    )
+        return results
+
     def audit_repo_visibility(
         self, max_pages: int = DEFAULT_MAX_PAGES
     ) -> list[dict]:

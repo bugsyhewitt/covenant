@@ -733,6 +733,69 @@ class _GitHubHandler(BaseHTTPRequestHandler):
                     },
                 )
         elif parsed.path.startswith("/repos/") and parsed.path.endswith(
+            "/deployment_protection_rules"
+        ):
+            # Deployment-protection-rule audit
+            # (--audit-deployment-protection). The endpoint is
+            # /repos/{owner}/{repo}/environments/{env}/
+            # deployment_protection_rules and returns the CUSTOM third-party
+            # GitHub Apps the environment delegates its deploy gate to. The
+            # spellbook 'production' env has TWO custom rules (one ENABLED
+            # third-party gate plus a SECOND that is installed but
+            # ``enabled=false`` — the high-signal "gate the operator thinks
+            # they have but does not" case). The grimoire 'production' env
+            # has none (an environment with no custom rules contributes
+            # nothing to the audit). Only rule + app metadata is returned —
+            # never an installation token, webhook secret, or any credential.
+            parts = parsed.path.split("/")
+            # parts: ['', 'repos', '{owner}', '{repo}', 'environments',
+            #         '{env}', 'deployment_protection_rules']
+            repo = "/".join(parts[2:4])
+            leaky = repo.endswith("/spellbook")
+            if leaky:
+                self._json(
+                    200,
+                    {
+                        "total_count": 2,
+                        "custom_deployment_protection_rules": [
+                            {
+                                "id": 9001,
+                                "node_id": "MDg6Q3VzdG9tUnVsZTk=",
+                                "enabled": True,
+                                "app": {
+                                    "id": 4242,
+                                    "slug": "third-party-gate",
+                                    "integration_url": (
+                                        "https://example.invalid/apps/"
+                                        "third-party-gate"
+                                    ),
+                                },
+                            },
+                            {
+                                "id": 9002,
+                                "node_id": "MDg6Q3VzdG9tUnVsZTk5",
+                                "enabled": False,
+                                "app": {
+                                    "id": 4343,
+                                    "slug": "stale-gate",
+                                    "integration_url": (
+                                        "https://example.invalid/apps/"
+                                        "stale-gate"
+                                    ),
+                                },
+                            },
+                        ],
+                    },
+                )
+            else:
+                self._json(
+                    200,
+                    {
+                        "total_count": 0,
+                        "custom_deployment_protection_rules": [],
+                    },
+                )
+        elif parsed.path.startswith("/repos/") and parsed.path.endswith(
             "/collaborators"
         ):
             # Per-repo collaborator enumeration (--enumerate-collaborators).

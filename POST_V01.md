@@ -976,10 +976,82 @@ fuller blast-radius picture — rather than reopening closed items.
 > protection and CODEOWNERS, rather than the CODEOWNERS file itself) and
 > the natural next defensive audit axis after the policy audits already
 > shipped.
+### Deployment-protection-rule audit in validate-token (`--audit-deployment-protection`) — IMPLEMENTED (Phase 2, Rotation 33)
+
+> **Status: shipped.** A read-only `--audit-deployment-protection` flag on
+> `validate-token` audits the CUSTOM deployment-protection rules installed
+> on the deployment environments of the repos a captured token can reach.
+> Where `--audit-actions-environments` (Rotation 20) reports the *built-in*
+> environment gate (required reviewers, wait timer, branch policy), this
+> lists the *third-party GitHub Apps* an environment delegates its deploy
+> gate to: each app returns approve/reject and a deploy lands or is held on
+> its verdict, so the app IS the gate. The decisive high-signal findings:
+> (a) every installed custom rule — operators usually know the built-in
+> policy but lose track of which third parties hold their deploy keys, and
+> (b) an installed rule with `enabled=false` — a gate the operator thinks
+> they have but does not.
+>
+> It walks the repos the token can reach (`GET /user/repos`); for each repo
+> lists its environments (`GET /repos/{owner}/{repo}/environments`); for each
+> environment lists its custom rules (`GET /repos/{owner}/{repo}/
+> environments/{env}/deployment_protection_rules`). The response wraps the
+> rules in `{"total_count", "custom_deployment_protection_rules": [...]}`;
+> each rule carries an `id`, an `enabled` flag, and a nested `app` with the
+> third-party's `id`/`slug`/`integration_url`. Each rule is normalized to
+> `{repo, environment, rule_id, app_slug, app_id, enabled}` — one entry per
+> installed custom rule. An environment with no custom rules contributes
+> nothing (empty environments are not noise); an environment whose endpoint
+> answers 403/404 (token lacks admin reach) is skipped rather than failing
+> the whole audit, so a partial-permission token still reports every rule
+> it can read.
+>
+> **The decisive invariant is metadata-only disclosure**: only the rule
+> metadata and the gating app's identity (`slug`+`id`) are surfaced — never
+> an installation token, webhook secret, app private key, or any other
+> credential. Read-only; never installs, removes, enables, or disables a
+> protection rule. GitLab and Bitbucket Cloud have no per-environment
+> custom-rule-app API (GitLab's analogous gating is split across
+> protected-environment approval rules, deploy-freeze windows, and external
+> MR-approval integrations; Bitbucket Cloud's analogue is the built-in
+> `admin_only` deploy gate already surfaced by
+> `--audit-actions-environments`), so the audit is a no-op there — empty
+> array + an explanatory `warnings` note, the same pattern as
+> `--audit-actions-permissions` and `--audit-advisory-alerts`.
+>
+> The walk reuses the shared paginator, scope guardrail and rate-limit
+> backoff, is bounded by `--max-pages`, and composes with every other
+> `--enumerate-*`/`--audit-*` flag. Purely additive: the v0.1
+> `scopes`/`user`/`admin` fields are untouched and the
+> `deployment_protection` array appears only when the flag is set. Tests:
+> `tests/test_audit_deployment_protection.py` covers each client's
+> normalized shape, the enabled/disabled split on GitHub, the GitLab and
+> Bitbucket no-op + `warnings` path, the no-credential-leak invariant
+> (assertions against `token`/`client_secret`/`private_key`/
+> `webhook_secret` substrings and a strict field whitelist), e2e
+> presence-only-when-requested, composition with the full
+> `--enumerate-*`/`--audit-*` family, the scope-guardrail gate (exit 2),
+> and `--help` documentation. Full suite: 442 passing (431 baseline + 11
+> new), zero regressions. README updated with a "Deployment-protection
+> audit" subsection.
+>
+> **Pivot note.** The dispatch named either `--audit-deployment-protection`
+> or `--audit-ip-allowlist`, whichever was a real gap. A grep confirmed
+> neither was shipped. `--audit-deployment-protection` was chosen because
+> it has a clean documented REST endpoint on GitHub
+> (`/repos/{owner}/{repo}/environments/{env}/deployment_protection_rules`)
+> with a well-defined response shape, whereas IP-allowlist on GitHub
+> requires GraphQL (`ipAllowListEntries`) and Bitbucket Cloud exposes no
+> public IP-allowlist listing API at all, which would force a lopsided
+> implementation. Deployment-protection rules also surface a distinct
+> attack surface (third-party app trust delegation) the existing
+> `--audit-actions-environments` does not cover, while IP-allowlist would
+> partly duplicate the network-perimeter signal a scope file already
+> encodes for operators.
 
 **Remaining candidate directions (unimplemented, for future laps):** OAuth-app /
-authorized-application enumeration (note its weak three-SCM parity, above), and
-team/sub-group enumeration.
+authorized-application enumeration (note its weak three-SCM parity, above),
+team/sub-group enumeration, and IP-allowlist audit (note its weak three-SCM
+parity — GitHub GraphQL-only, Bitbucket Cloud no public API).
 
 ## Follow-on fixes
 
