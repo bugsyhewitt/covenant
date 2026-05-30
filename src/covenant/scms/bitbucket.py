@@ -717,6 +717,37 @@ class BitbucketClient(BaseSCMClient):
                     )
         return results
 
+    def audit_deployment_protection(
+        self, max_pages: int = DEFAULT_MAX_PAGES
+    ) -> list[dict]:
+        """No-op on Bitbucket Cloud — no custom deployment-protection-rule API.
+
+        The GitHub flag lists the custom third-party GitHub Apps an
+        environment delegates its deploy gate to (each app returns
+        approve/reject and the deployment lands or is held). Bitbucket
+        Pipelines has no token-readable equivalent: the analogous gating is
+        the built-in ``restrictions.admin_only`` deploy gate on a deployment
+        environment (already surfaced by :meth:`audit_actions_environments`),
+        and Bitbucket Cloud has no per-environment listing of installed
+        third-party apps that gate a deploy. There is no uniform
+        per-environment custom-rule record for covenant to surface under this
+        flag on Bitbucket Cloud.
+
+        To keep the cross-provider audit uniform, the method exists and
+        returns an empty list (the same normalized shape the other SCMs would
+        yield, just with no entries) and records a single non-fatal
+        ``warnings`` note so the operator understands the empty result
+        reflects a platform-model difference, not a clean bill of health.
+        Read-only — it makes no request at all.
+        """
+        self.warnings.append(
+            "deployment-protection audit is unsupported on Bitbucket Cloud "
+            "(no per-environment custom-rule app API; the admin_only deploy "
+            "gate is surfaced by --audit-actions-environments); result is "
+            "empty by design, not a clean bill of health"
+        )
+        return []
+
     def audit_repo_visibility(
         self, max_pages: int = DEFAULT_MAX_PAGES
     ) -> list[dict]:

@@ -1543,6 +1543,91 @@ beside a strongly-gated one):
 }
 ```
 
+### Deployment-protection audit (`--audit-deployment-protection`)
+
+Custom **deployment protection rules** are the third-party GitHub Apps an
+environment delegates its deploy gate to. Each rule is a separately-installed
+GitHub App that the environment consults before a deployment proceeds; the app
+returns approve/reject and the deployment lands or is held. Where
+`--audit-actions-environments` reports the *built-in* environment gate
+(required reviewers, wait timer, branch policy), this audit lists the
+*delegated third-party* gates — a supply-chain trust bond the built-in posture
+does not cover. Operators usually know the built-in policy but lose track of
+which custom apps were ever installed as a gate, so listing them surfaces the
+third parties that hold the deploy keys; conversely, an installed rule with
+`enabled: false` is **a gate the operator thinks they have but does not**.
+
+Pass `--audit-deployment-protection` to `validate-token` and covenant walks
+the repos the token can reach with a **read-only** query, adding a
+`deployment_protection` array — one entry per installed custom rule.
+
+| SCM       | Endpoint(s)                                                                                                  | What's surfaced                                                |
+|-----------|--------------------------------------------------------------------------------------------------------------|----------------------------------------------------------------|
+| GitHub    | `GET /repos/{owner}/{repo}/environments` + `GET /repos/{owner}/{repo}/environments/{env}/deployment_protection_rules` | per-rule `{rule_id, app_slug, app_id, enabled}`               |
+| GitLab    | *no equivalent — empty result + an explanatory `warnings` note*                                              | n/a                                                            |
+| Bitbucket | *no equivalent — empty result + an explanatory `warnings` note*                                              | n/a                                                            |
+
+Each entry is normalized to `{"repo", "environment", "rule_id", "app_slug",
+"app_id", "enabled"}`. An environment with no custom rules contributes nothing
+(empty environments are not noise); an environment whose listing endpoint
+answers 403/404 (token lacks admin reach on the repo) is skipped rather than
+failing the whole audit, so a partial-permission token still reports every
+rule it can read.
+
+> **Provider parity caveat.** GitLab and Bitbucket Cloud have no
+> per-environment custom-rule-app API: GitLab's analogous gating is split
+> across protected-environment approval rules (already surfaced by
+> `--audit-actions-environments` via `required_approval_count`), deployment
+> freeze windows, and external MR-approval integrations; Bitbucket Cloud's
+> analogue is the built-in `restrictions.admin_only` deploy gate (also
+> surfaced by `--audit-actions-environments`). The audit therefore returns an
+> empty `deployment_protection` array on those SCMs and records a non-fatal
+> `warnings` note so the empty result is not misread as a clean bill of
+> health.
+
+Only the rule metadata and the gating app's identity (`slug` + `id`) are
+surfaced — covenant never echoes an installation token, webhook secret, app
+private key, or any other credential, and the audit never installs, removes,
+enables, or disables a protection rule. The walk is bounded by the same
+`--max-pages` flag and honors the scope guardrail and automatic rate-limit
+retry/backoff. Like the other `--enumerate-*`/`--audit-*` flags the feature
+is purely additive (all may be combined): without the flag the output is
+unchanged, and with it the v0.1 `scopes`/`user`/`admin` fields are untouched
+— only the `deployment_protection` array is added.
+
+```bash
+covenant github validate-token \
+  --scope-file scope.txt \
+  --audit-deployment-protection \
+  --token-env COVENANT_TOKEN
+```
+
+Example `deployment_protection` array (one actively-delegated third-party
+gate beside a stale rule that is installed but disabled):
+
+```json
+{
+  "deployment_protection": [
+    {
+      "repo": "acme-corp/spellbook",
+      "environment": "production",
+      "rule_id": 9001,
+      "app_slug": "third-party-gate",
+      "app_id": 4242,
+      "enabled": true
+    },
+    {
+      "repo": "acme-corp/spellbook",
+      "environment": "production",
+      "rule_id": 9002,
+      "app_slug": "stale-gate",
+      "app_id": 4343,
+      "enabled": false
+    }
+  ]
+}
+```
+
 ### Member enumeration (`--enumerate-members`)
 
 Where the rest of the `--enumerate-*` family maps what *this* token reaches (its

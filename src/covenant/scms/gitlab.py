@@ -929,6 +929,37 @@ class GitLabClient(BaseSCMClient):
                     out[name] = 0
         return out
 
+    def audit_deployment_protection(
+        self, max_pages: int = DEFAULT_MAX_PAGES
+    ) -> list[dict]:
+        """No-op on GitLab, which has no custom deployment-protection-rule API.
+
+        The GitHub flag lists the custom third-party GitHub Apps an
+        environment delegates its deploy gate to (each app returns
+        approve/reject and the deployment lands or is held). GitLab CI has no
+        token-readable equivalent: the analogous gating is split across
+        unrelated mechanisms — protected-environment approval rules (already
+        surfaced by :meth:`audit_actions_environments` via
+        ``required_approval_count``), deployment-freeze windows, and external
+        merge-request approval integrations — rather than a per-environment
+        list of third-party gate apps. There is no uniform per-environment
+        custom-rule record for covenant to surface under this flag on GitLab.
+
+        To keep the cross-provider audit uniform, the method exists and
+        returns an empty list (the same normalized shape the other SCMs would
+        yield, just with no entries) and records a single non-fatal
+        ``warnings`` note so the operator understands the empty result
+        reflects a platform-model difference, not a clean bill of health.
+        Read-only — it makes no request at all.
+        """
+        self.warnings.append(
+            "deployment-protection audit is unsupported on GitLab "
+            "(no per-environment custom-rule app API; gating is split across "
+            "approval rules, freeze windows, and external MR integrations); "
+            "result is empty by design, not a clean bill of health"
+        )
+        return []
+
     def audit_repo_visibility(
         self, max_pages: int = DEFAULT_MAX_PAGES
     ) -> list[dict]:

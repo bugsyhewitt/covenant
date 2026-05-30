@@ -435,6 +435,35 @@ def _build_parser() -> argparse.ArgumentParser:
             ),
         )
         token.add_argument(
+            "--audit-deployment-protection",
+            action="store_true",
+            default=False,
+            dest="audit_deployment_protection",
+            help=(
+                "additionally audit the CUSTOM deployment-protection-rule apps "
+                "installed on the deployment environments of the repos this "
+                "token can reach (GitHub Actions custom deployment protection "
+                "rules) via a read-only query; adds a 'deployment_protection' "
+                "array of {repo, environment, rule_id, app_slug, app_id, "
+                "enabled} entries — one per installed custom rule. Where "
+                "--audit-actions-environments reports the BUILT-IN environment "
+                "gate (required reviewers, wait timer, branch policy), this "
+                "lists the THIRD-PARTY GitHub Apps an environment delegates its "
+                "deploy gate to: each app returns approve/reject and a deploy "
+                "lands or is held on its verdict, so the app IS the gate. That "
+                "delegation is a supply-chain trust bond — a compromise of the "
+                "third-party app's infrastructure or review logic means deploys "
+                "to that environment pass automatically; an 'enabled=false' rule "
+                "is a gate the operator thinks they have but does not. Only "
+                "rule metadata and the gating app's identity (slug + id) are "
+                "surfaced, never an installation token, webhook secret, or any "
+                "credential. GitLab and Bitbucket Cloud have no per-environment "
+                "custom-rule-app API, so the result is empty there with an "
+                "explanatory warning. Read-only; never installs, removes, "
+                "enables, or disables a protection rule."
+            ),
+        )
+        token.add_argument(
             "--audit-repo-visibility",
             action="store_true",
             default=False,
@@ -799,7 +828,7 @@ def _build_parser() -> argparse.ArgumentParser:
                 f"maximum org/group/workspace/key/gist/webhook/deploy-key/"
                 f"branch-protection/actions-secret/repo-visibility/codeowners/"
                 f"dependabot-alert/package/secret-scanning/member/collaborator/"
-                f"commit/workflow-run pages to walk when "
+                f"commit/workflow-run/deployment-protection pages to walk when "
                 f"an --enumerate-*, "
                 f"--audit-*, or --scan-commits flag is set (default: "
                 f"{DEFAULT_MAX_PAGES}, hard ceiling: {HARD_MAX_PAGES})."
@@ -1051,6 +1080,19 @@ def main(argv: list[str] | None = None) -> int:
                 payload["actions_environments"] = (
                     client.audit_actions_environments(max_pages=max_pages)
                 )
+            # Optional deployment-protection audit. Read-only, additive: the
+            # v0.1 validate-token fields are untouched and the
+            # 'deployment_protection' array only appears when
+            # --audit-deployment-protection is requested. Lists the CUSTOM
+            # third-party deployment-protection-rule apps an environment
+            # delegates its deploy gate to — the supply-chain trust bond
+            # the built-in --audit-actions-environments posture does not
+            # cover. Only rule metadata + the gating app's identity are
+            # surfaced, never a credential.
+            if getattr(args, "audit_deployment_protection", False):
+                payload["deployment_protection"] = (
+                    client.audit_deployment_protection(max_pages=max_pages)
+                )
             # Optional repo-visibility audit. Read-only, additive: the v0.1
             # validate-token fields are untouched and the 'repo_visibility'
             # array only appears when --audit-repo-visibility is requested.
@@ -1260,6 +1302,7 @@ def main(argv: list[str] | None = None) -> int:
                 or getattr(args, "enumerate_actions_secrets", False)
                 or getattr(args, "enumerate_runners", False)
                 or getattr(args, "audit_actions_environments", False)
+                or getattr(args, "audit_deployment_protection", False)
                 or getattr(args, "audit_repo_visibility", False)
                 or getattr(args, "audit_codeowners", False)
                 or getattr(args, "audit_dependabot_alerts", False)
