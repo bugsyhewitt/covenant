@@ -1193,6 +1193,29 @@ class BitbucketClient(BaseSCMClient):
         )
         return []
 
+    def enumerate_teams(self, max_pages: int = DEFAULT_MAX_PAGES) -> list[dict]:
+        """No-op on Bitbucket Cloud — workspaces have no team/subgroup sub-unit.
+
+        Bitbucket Cloud organises permissions as workspace → project → repository.
+        There is no nested team or sub-group concept analogous to GitHub teams or
+        GitLab subgroups with a public REST endpoint a recon-grade token can
+        enumerate. Bitbucket's ``/2.0/workspaces/{slug}/permissions/teams``
+        endpoint lists the PERMISSION GROUPS (groups of users mapped to a
+        permission level), not sub-units; it requires a workspace-admin token and
+        is not covered here.
+
+        To keep the cross-provider interface uniform, the method exists and returns
+        an empty list and records a single non-fatal ``warnings`` note so the
+        operator understands the empty result reflects a platform limitation, not
+        an absence of teams. Read-only — it makes no request at all.
+        """
+        self.warnings.append(
+            "team enumeration is unsupported on Bitbucket Cloud "
+            "(workspaces have no team/subgroup sub-unit with a public REST "
+            "endpoint; result is empty by design, not an absence of teams)"
+        )
+        return []
+
     def enumerate_members(self, max_pages: int = DEFAULT_MAX_PAGES) -> list[dict]:
         """List the other members of the workspaces this token can reach.
 

@@ -825,6 +825,32 @@ def _build_parser() -> argparse.ArgumentParser:
             ),
         )
         token.add_argument(
+            "--enumerate-teams",
+            action="store_true",
+            default=False,
+            dest="enumerate_teams",
+            help=(
+                "additionally list the teams/subgroups of the orgs/groups this "
+                "token can reach (GitHub org teams, GitLab group subgroups; "
+                "Bitbucket Cloud has no sub-unit API — returns empty + warning) "
+                "via a read-only query; adds a 'teams' array of "
+                "{scope, owner, team_name, team_slug, description, privacy, "
+                "parent_slug} entries. Maps the ORGANISATIONAL STRUCTURE of each "
+                "org/group: which sub-units exist, their slug (used in CODEOWNERS "
+                "and branch-protection reviews), their privacy level (GitHub "
+                "'secret' teams are invisible to non-members), and the parent "
+                "team (for nested hierarchies). Useful for CODEOWNERS coverage "
+                "gap analysis, permission blast-radius auditing (teams hold repo "
+                "permissions that inherit down the hierarchy), and stale-team "
+                "hygiene (a team with zero members still holds its repository "
+                "permissions until explicitly deleted). Only team metadata is "
+                "surfaced — never member identities, tokens, or repo credentials. "
+                "GitLab reports subgroups nested directly under each top-level "
+                "group; deeper nesting requires additional laps. Composes with "
+                "every other --enumerate-*/--audit-* flag."
+            ),
+        )
+        token.add_argument(
             "--enumerate-collaborators",
             action="store_true",
             default=False,
@@ -1333,6 +1359,16 @@ def main(argv: list[str] | None = None) -> int:
                 payload["members"] = client.enumerate_members(
                     max_pages=max_pages
                 )
+            # Optional org/group team enumeration. Read-only, additive: the
+            # v0.1 validate-token fields are untouched and the 'teams' array
+            # only appears when --enumerate-teams is requested. Maps the
+            # organisational structure (sub-units) of each org/group the token
+            # can reach: GitHub org teams, GitLab group subgroups. Only team
+            # metadata is surfaced — never member identities or credentials.
+            # Bitbucket Cloud has no team/subgroup sub-unit API; the client
+            # returns empty + a warning entry.
+            if getattr(args, "enumerate_teams", False):
+                payload["teams"] = client.enumerate_teams(max_pages=max_pages)
             # Optional per-repo collaborator enumeration. Read-only, additive:
             # the v0.1 validate-token fields are untouched and the
             # 'collaborators' array only appears when --enumerate-collaborators
@@ -1418,6 +1454,7 @@ def main(argv: list[str] | None = None) -> int:
                 or getattr(args, "audit_branch_ruleset", False)
                 or getattr(args, "audit_ip_allowlist", False)
                 or getattr(args, "enumerate_members", False)
+                or getattr(args, "enumerate_teams", False)
                 or getattr(args, "enumerate_collaborators", False)
                 or getattr(args, "scan_commits", False)
                 or getattr(args, "show_commit_secrets", False)

@@ -1822,6 +1822,65 @@ class GitHubClient(BaseSCMClient):
                         )
         return results
 
+    def enumerate_teams(self, max_pages: int = DEFAULT_MAX_PAGES) -> list[dict]:
+        """List the teams (sub-units of orgs) this token can reach.
+
+        Teams map the ORGANISATIONAL STRUCTURE of every org the token belongs to:
+        which sub-groups exist, their slug (the URL-safe handle used in CODEOWNERS
+        and branch-protection reviews), their privacy level (``"secret"`` teams are
+        invisible to non-members), and the team hierarchy (``parent_slug`` if the
+        team is nested under another). The full team inventory is useful for:
+
+        * **CODEOWNERS coverage gaps** — a secret team that appears in CODEOWNERS is
+          invisible to operators who are not members; knowing it exists and who its
+          parent is lets an auditor reason about whether it can approve a PR.
+        * **Permission blast-radius** — teams in GitHub inherit from their parent
+          and can hold repo permissions; enumerating them alongside
+          ``--enumerate-members`` gives a full picture of who can write to what.
+        * **Stale team hygiene** — a team with zero members still holds its
+          repository permissions until explicitly deleted; surfacing it lets an
+          operator audit for abandoned grants.
+
+        Walks the organizations the token belongs to (via :meth:`enumerate_orgs`)
+        and, for each org, lists ``GET /orgs/{org}/teams`` (the endpoint returns
+        every team the authenticated user can see, including secret teams they are a
+        member of). Returns a normalized ``{"scope", "owner", "team_name",
+        "team_slug", "description", "privacy", "parent_slug"}`` dict per team.
+        Only team metadata is surfaced — never member identities, tokens, or
+        repo credentials.
+        """
+        results: list[dict] = []
+        for org in self.enumerate_orgs(max_pages=max_pages):
+            owner = org.get("name")
+            if not owner:
+                continue
+            for resp in self._get_paginated(
+                f"/orgs/{owner}/teams",
+                params={"per_page": 100},
+                max_pages=max_pages,
+                next_request=_next_link,
+            ):
+                body = resp.json()
+                if not isinstance(body, list):
+                    continue
+                for item in body:
+                    name = item.get("name")
+                    if not name:
+                        continue
+                    parent = item.get("parent") or {}
+                    results.append(
+                        {
+                            "scope": "org",
+                            "owner": owner,
+                            "team_name": name,
+                            "team_slug": item.get("slug", ""),
+                            "description": item.get("description") or "",
+                            "privacy": item.get("privacy", ""),
+                            "parent_slug": parent.get("slug") or None,
+                        }
+                    )
+        return results
+
     def enumerate_collaborators(
         self, max_pages: int = DEFAULT_MAX_PAGES
     ) -> list[dict]:

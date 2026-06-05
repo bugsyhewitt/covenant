@@ -1048,10 +1048,25 @@ fuller blast-radius picture — rather than reopening closed items.
 > partly duplicate the network-perimeter signal a scope file already
 > encodes for operators.
 
+### Team/subgroup enumeration in validate-token (`--enumerate-teams`) — IMPLEMENTED (Phase 2, Rotation 36)
+
+> **Status: shipped.** A read-only `--enumerate-teams` flag on `validate-token`
+> maps the organisational structure of each org/group the token can reach: GitHub
+> org teams (slug, privacy, parent hierarchy) and GitLab group subgroups (path,
+> visibility). Bitbucket Cloud has no team/subgroup sub-unit API and returns an
+> empty list with a `warnings` note. Each entry is normalised to
+> `{scope, owner, team_name, team_slug, description, privacy, parent_slug}`.
+> Only team metadata is surfaced — never member identities, tokens, or credentials.
+> Tests: `tests/test_enumerate_teams.py` covers normalized shape per provider,
+> privacy/parent_slug mapping, no-credential-leak, Bitbucket no-op + warning,
+> CLI presence-only-when-requested, composition with other flags, scope guardrail
+> (exit 2), and --help documentation. 14 new tests; full suite 492 passing.
+> README updated with a "Team/subgroup enumeration" subsection.
+
 **Remaining candidate directions (unimplemented, for future laps):** OAuth-app /
 authorized-application enumeration (note its weak three-SCM parity, above),
-team/sub-group enumeration, and IP-allowlist audit (note its weak three-SCM
-parity — GitHub GraphQL-only, Bitbucket Cloud no public API).
+and IP-allowlist audit (note its weak three-SCM parity — GitHub GraphQL-only,
+Bitbucket Cloud no public API).
 
 ## Follow-on fixes
 

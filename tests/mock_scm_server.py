@@ -923,6 +923,37 @@ class _GitHubHandler(BaseHTTPRequestHandler):
                         {"login": "apprentice"},
                     ],
                 )
+        elif parsed.path.startswith("/orgs/") and parsed.path.endswith("/teams"):
+            # Team enumeration (--enumerate-teams). Each org has two teams: one
+            # secret top-level team and one closed child team nested under it.
+            # Only team metadata is returned — no member identities or credentials.
+            owner = parsed.path.split("/")[2]
+            self._json(
+                200,
+                [
+                    {
+                        "id": 1,
+                        "name": f"{owner}-sorcerers",
+                        "slug": f"{owner}-sorcerers",
+                        "description": "Core magic team",
+                        "privacy": "secret",
+                        "permission": "push",
+                        "parent": None,
+                    },
+                    {
+                        "id": 2,
+                        "name": f"{owner}-apprentices",
+                        "slug": f"{owner}-apprentices",
+                        "description": "Junior team",
+                        "privacy": "closed",
+                        "permission": "pull",
+                        "parent": {
+                            "id": 1,
+                            "slug": f"{owner}-sorcerers",
+                        },
+                    },
+                ],
+            )
         elif parsed.path.startswith("/repos/") and parsed.path.endswith(
             "/commits"
         ):
@@ -1630,6 +1661,29 @@ class _GitLabHandler(BaseHTTPRequestHandler):
                 [
                     {"username": "spellcaster", "access_level": 50},
                     {"username": "apprentice", "access_level": 30},
+                ],
+                headers={"X-Page": "1", "X-Next-Page": "", "X-Total-Pages": "1"},
+            )
+        elif parsed.path.startswith("/api/v4/groups/") and parsed.path.endswith(
+            "/subgroups"
+        ):
+            # Subgroup enumeration (--enumerate-teams). Each group has one
+            # subgroup. GitLab returns subgroup metadata with a path, full_path,
+            # visibility, and description. Only group metadata is returned —
+            # no member identities or credentials.
+            # Extract the group id/name from the path segment.
+            group_part = parsed.path.split("/api/v4/groups/")[1].split("/subgroups")[0]
+            self._json(
+                200,
+                [
+                    {
+                        "id": 101,
+                        "name": f"{group_part}-sub",
+                        "path": f"{group_part}-sub",
+                        "full_path": f"necromancer-test/{group_part}-sub",
+                        "description": "A sub-group for spells",
+                        "visibility": "private",
+                    }
                 ],
                 headers={"X-Page": "1", "X-Next-Page": "", "X-Total-Pages": "1"},
             )
