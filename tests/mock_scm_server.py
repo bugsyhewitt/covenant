@@ -300,6 +300,9 @@ class _GitHubHandler(BaseHTTPRequestHandler):
                         "id": 1,
                         "ip_allow_list_enabled": True,
                         "ip_allow_list_enabled_for_installed_apps": True,
+                        # --audit-org-mfa: acme-corp REQUIRES MFA (strong
+                        # identity-authentication posture).
+                        "two_factor_requirement_enabled": True,
                     },
                 )
             else:
@@ -310,6 +313,9 @@ class _GitHubHandler(BaseHTTPRequestHandler):
                         "id": 2,
                         "ip_allow_list_enabled": False,
                         "ip_allow_list_enabled_for_installed_apps": False,
+                        # --audit-org-mfa: wizards-inc does NOT require MFA —
+                        # the high-signal finding the audit exists to surface.
+                        "two_factor_requirement_enabled": False,
                     },
                 )
         elif parsed.path.startswith("/orgs/") and parsed.path.endswith("/hooks"):
@@ -1864,6 +1870,39 @@ class _GitLabHandler(BaseHTTPRequestHandler):
                 )
             else:
                 self._json(404, {"message": "404 File Not Found"})
+        elif (
+            parsed.path.startswith("/api/v4/groups/")
+            and parsed.path.count("/") == 4
+        ):
+            # Single-group metadata GET (--audit-org-mfa). The path is
+            # /api/v4/groups/{id} with exactly 4 slashes (no trailing
+            # sub-resource segment). The two groups exercise the audit's
+            # high-signal split:
+            #   * acme-corp: MFA REQUIRED — two_factor_required=true (the
+            #     locked-down posture an auditor wants to see);
+            #   * acme-corp/wizards (URL-encoded as acme-corp%2Fwizards):
+            #     MFA NOT REQUIRED — two_factor_required=false (the
+            #     high-signal finding the audit exists to surface).
+            from urllib.parse import unquote
+            group_id = unquote(parsed.path.split("/api/v4/groups/")[1])
+            if group_id == "acme-corp":
+                self._json(
+                    200,
+                    {
+                        "id": 10,
+                        "full_path": "acme-corp",
+                        "require_two_factor_authentication": True,
+                    },
+                )
+            else:
+                self._json(
+                    200,
+                    {
+                        "id": 11,
+                        "full_path": group_id,
+                        "require_two_factor_authentication": False,
+                    },
+                )
         elif parsed.path == "/api/v4/groups":
             # Group/blast-radius enumeration (--enumerate-orgs).
             self._json(

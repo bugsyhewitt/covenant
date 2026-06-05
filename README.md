@@ -1802,6 +1802,60 @@ one — no perimeter at all):
 }
 ```
 
+### Org MFA enforcement audit (`--audit-org-mfa`)
+
+Multi-factor authentication requirement is the **identity authentication baseline**
+that underpins every other org-level control: branch protection, IP allowlist, and
+environment gates are all meaningless if a member account can be taken over with a
+single stolen password. `--audit-org-mfa` audits whether MFA/2FA is **required**
+for all members of each org/group the token can reach.
+
+The high-signal finding is `two_factor_required: false` — the org does NOT mandate
+MFA, meaning every member account is one phished or brute-forced password away from
+full compromise and everything it can reach.
+
+**What is surfaced:** only the boolean enforcement flag — never member usernames,
+emails, recovery codes, or any other identity metadata.
+
+**Provider coverage:**
+- **GitHub** — reads `two_factor_requirement_enabled` from `GET /orgs/{org}`.
+- **GitLab** — reads `require_two_factor_authentication` from `GET /api/v4/groups/{id}`.
+- **Bitbucket Cloud** — the workspace two-step-verification enforcement flag is an
+  admin-UI-only setting with no public REST endpoint; the audit returns empty with
+  an explanatory warning.
+
+```bash
+export COVENANT_TOKEN="ghp_..."
+covenant github validate-token \
+  --audit-org-mfa \
+  --scope-file scope.txt
+```
+
+Example output:
+
+```json
+{
+  "scopes": ["repo", "read:org"],
+  "user": "spelunker",
+  "admin": false,
+  "org_mfa": [
+    {
+      "scope": "org",
+      "owner": "acme-corp",
+      "two_factor_required": true
+    },
+    {
+      "scope": "org",
+      "owner": "wizards-inc",
+      "two_factor_required": false
+    }
+  ]
+}
+```
+
+`two_factor_required: false` on `wizards-inc` means every wizard can be one-factored
+into providing full org access.
+
 ### Member enumeration (`--enumerate-members`)
 
 Where the rest of the `--enumerate-*` family maps what *this* token reaches (its
