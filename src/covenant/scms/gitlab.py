@@ -1732,6 +1732,56 @@ class GitLabClient(BaseSCMClient):
                     )
         return results
 
+    def enumerate_teams(self, max_pages: int = DEFAULT_MAX_PAGES) -> list[dict]:
+        """List the subgroups (sub-units of groups) this token can reach.
+
+        GitLab's analogue of GitHub team enumeration. Where :meth:`enumerate_orgs`
+        returns the top-level groups (the org analogue), this returns the
+        subgroups nested within each of those groups. Subgroups are the
+        organisational building-blocks that hold projects and their own membership
+        grants; the hierarchy and visibility of each subgroup shapes who can access
+        which projects without a direct project grant.
+
+        Walks the groups the token belongs to (via :meth:`enumerate_orgs`) and,
+        for each, lists ``GET /api/v4/groups/{id}/subgroups``. Returns a
+        normalized ``{"scope", "owner", "team_name", "team_slug", "description",
+        "privacy", "parent_slug"}`` dict per subgroup. ``privacy`` maps GitLab's
+        ``visibility`` field (``"private"``/``"internal"``/``"public"``).
+        Only group metadata is surfaced — never member identities or credentials.
+        """
+        results: list[dict] = []
+        for group in self.enumerate_orgs(max_pages=max_pages):
+            owner = group.get("name")
+            if not owner:
+                continue
+            path = f"/api/v4/groups/{_group_id(owner)}/subgroups"
+            params = {"per_page": _PER_PAGE, "page": 1}
+            for resp in self._get_paginated(
+                path,
+                params=params,
+                max_pages=max_pages,
+                next_request=_gitlab_next(path, params),
+            ):
+                body = resp.json()
+                if not isinstance(body, list):
+                    continue
+                for item in body:
+                    name = item.get("name")
+                    if not name:
+                        continue
+                    results.append(
+                        {
+                            "scope": "group",
+                            "owner": owner,
+                            "team_name": name,
+                            "team_slug": item.get("path") or item.get("full_path", ""),
+                            "description": item.get("description") or "",
+                            "privacy": item.get("visibility", ""),
+                            "parent_slug": owner,
+                        }
+                    )
+        return results
+
     def enumerate_collaborators(
         self, max_pages: int = DEFAULT_MAX_PAGES
     ) -> list[dict]:

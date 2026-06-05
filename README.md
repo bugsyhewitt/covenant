@@ -1855,6 +1855,68 @@ the highest-value lateral target):
 }
 ```
 
+### Team/subgroup enumeration (`--enumerate-teams`)
+
+Maps the **organisational structure** of each org/group the captured token can
+reach: which sub-units (GitHub teams, GitLab subgroups) exist, their slug (used in
+CODEOWNERS entries and branch-protection review requirements), their **privacy
+level** (GitHub `"secret"` teams are invisible to non-members), and the **team
+hierarchy** (`parent_slug` for nested teams).
+
+Useful for:
+
+* **CODEOWNERS coverage gap analysis** — a `"secret"` team that appears in
+  CODEOWNERS is invisible to operators who are not members; knowing it exists lets
+  an auditor verify the review chain is intact.
+* **Permission blast-radius auditing** — GitHub teams hold repository permission
+  grants that inherit down the hierarchy; `--enumerate-teams` paired with
+  `--enumerate-members` gives a complete picture.
+* **Stale-team hygiene** — a team with zero members still holds its repository
+  permissions until explicitly deleted.
+
+Pass `--enumerate-teams` to `validate-token` and covenant adds a `teams` array of
+`{scope, owner, team_name, team_slug, description, privacy, parent_slug}` entries.
+Only team metadata is surfaced — never member identities, tokens, or repository
+credentials. **Bitbucket Cloud** has no team/subgroup sub-unit API; the result is
+an empty array with a `warnings` entry explaining the platform limitation.
+
+```sh
+covenant github validate-token \
+  --scope-file scope.txt \
+  --enumerate-teams
+```
+
+```json
+{
+  "scopes": ["repo", "read:org"],
+  "user": "necromancer",
+  "admin": false,
+  "token_type": "GitHub Classic PAT",
+  "token_note": "",
+  "token_type_confidence": "high",
+  "teams": [
+    {
+      "scope": "org",
+      "owner": "acme-corp",
+      "team_name": "acme-corp-sorcerers",
+      "team_slug": "acme-corp-sorcerers",
+      "description": "Core magic team",
+      "privacy": "secret",
+      "parent_slug": null
+    },
+    {
+      "scope": "org",
+      "owner": "acme-corp",
+      "team_name": "acme-corp-apprentices",
+      "team_slug": "acme-corp-apprentices",
+      "description": "Junior team",
+      "privacy": "closed",
+      "parent_slug": "acme-corp-sorcerers"
+    }
+  ]
+}
+```
+
 ### Collaborator enumeration (`--enumerate-collaborators`)
 
 Where `--enumerate-members` maps the people who share an **org/group/workspace's**
