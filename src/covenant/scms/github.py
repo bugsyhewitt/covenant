@@ -2125,6 +2125,60 @@ class GitHubClient(BaseSCMClient):
             )
         return results
 
+    def audit_org_mfa(
+        self, max_pages: int = DEFAULT_MAX_PAGES
+    ) -> list[dict]:
+        """Audit whether each reachable org enforces MFA/2FA for its members.
+
+        Multi-factor authentication requirement is the org-level identity
+        control that defends against credential-stuffing and phishing: if an
+        org does NOT require MFA, a single leaked password is enough to fully
+        compromise a member account and everything it can reach. Where the
+        other audit-* flags report policy controls (branch protection,
+        environment gates, IP perimeter), this reports the IDENTITY
+        authentication baseline — often the first control auditors ask about
+        in a supply-chain security assessment.
+
+        The high-signal findings are:
+
+        * ``two_factor_required=False`` — the org does NOT mandate MFA; every
+          member account is one phished or brute-forced password away from
+          full compromise. The single most impactful finding this audit can
+          surface.
+
+        Walks the orgs from :meth:`enumerate_orgs` and, for each, GETs
+        ``/orgs/{org}`` (the same per-org metadata endpoint
+        :meth:`audit_ip_allowlist` already relies on). Returns a normalized
+        list of ``{"scope", "owner", "two_factor_required"}`` dicts.
+        ``two_factor_required`` falls back to ``False`` when the API omits
+        the field (older orgs, free plans, or a recon-grade token without
+        admin:org scope) — an absent field never silently masquerades as a
+        clean bill of health. An org whose ``/orgs/{org}`` endpoint answers
+        403/404 (token cannot see the org metadata) is skipped. Read-only;
+        never changes any org setting.
+        """
+        results: list[dict] = []
+        for org in self.enumerate_orgs(max_pages=max_pages):
+            owner = org.get("name")
+            if not owner:
+                continue
+            try:
+                body = self._get(f"/orgs/{owner}").json()
+            except SCMError:
+                continue
+            if not isinstance(body, dict):
+                continue
+            results.append(
+                {
+                    "scope": "org",
+                    "owner": owner,
+                    "two_factor_required": bool(
+                        body.get("two_factor_requirement_enabled", False)
+                    ),
+                }
+            )
+        return results
+
     def scan_commits(self, max_pages: int = DEFAULT_MAX_PAGES) -> list[dict]:
         """Collect commit metadata + messages from the repos this token reaches.
 

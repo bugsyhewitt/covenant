@@ -806,6 +806,35 @@ def _build_parser() -> argparse.ArgumentParser:
             ),
         )
         token.add_argument(
+            "--audit-org-mfa",
+            action="store_true",
+            default=False,
+            dest="audit_org_mfa",
+            help=(
+                "additionally audit whether MFA/2FA is REQUIRED for members "
+                "of the orgs/groups this token can reach (GitHub org "
+                "two_factor_requirement_enabled, GitLab group "
+                "require_two_factor_authentication) via a read-only query; "
+                "adds an 'org_mfa' array of {scope, owner, "
+                "two_factor_required} entries. The identity authentication "
+                "baseline — an org that does NOT require MFA leaves every "
+                "member account one phished or brute-forced password away "
+                "from full compromise. The high-signal finding is "
+                "two_factor_required=false: even if branch protection, "
+                "environment gates, and webhook hygiene are all correct, "
+                "a single-factor org member can have their account taken "
+                "over and its token captured. Only the boolean enforcement "
+                "flag is surfaced; no member identity, credential, or "
+                "recovery-code metadata is ever echoed. An org whose "
+                "metadata endpoint answers 403/404 (token cannot see the "
+                "org metadata) is skipped (not fatal). Bitbucket Cloud's "
+                "workspace two-step-verification enforcement has no public "
+                "REST endpoint a recon-grade token can query, so the result "
+                "is empty there with an explanatory warning. Read-only; "
+                "never changes any org/group setting."
+            ),
+        )
+        token.add_argument(
             "--enumerate-members",
             action="store_true",
             default=False,
@@ -1349,6 +1378,21 @@ def main(argv: list[str] | None = None) -> int:
                 payload["ip_allowlist"] = client.audit_ip_allowlist(
                     max_pages=max_pages
                 )
+            # Optional org MFA enforcement audit. Read-only, additive: the
+            # v0.1 validate-token fields are untouched and the 'org_mfa'
+            # array only appears when --audit-org-mfa is requested.
+            # Reports whether each reachable org/group REQUIRES MFA for its
+            # members — the identity authentication baseline. High-signal
+            # finding: two_factor_required=false means every member account
+            # is one phished or stolen password away from full compromise.
+            # Only the boolean enforcement flag is surfaced; no member
+            # identity, credential, or recovery-code metadata is ever
+            # echoed. Bitbucket Cloud has no public API for this setting
+            # and returns empty + warning.
+            if getattr(args, "audit_org_mfa", False):
+                payload["org_mfa"] = client.audit_org_mfa(
+                    max_pages=max_pages
+                )
             # Optional org/group/workspace member enumeration. Read-only,
             # additive: the v0.1 validate-token fields are untouched and the
             # 'members' array only appears when --enumerate-members is
@@ -1453,6 +1497,7 @@ def main(argv: list[str] | None = None) -> int:
                 or getattr(args, "audit_workflow_runs", False)
                 or getattr(args, "audit_branch_ruleset", False)
                 or getattr(args, "audit_ip_allowlist", False)
+                or getattr(args, "audit_org_mfa", False)
                 or getattr(args, "enumerate_members", False)
                 or getattr(args, "enumerate_teams", False)
                 or getattr(args, "enumerate_collaborators", False)

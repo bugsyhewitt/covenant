@@ -1193,6 +1193,33 @@ class BitbucketClient(BaseSCMClient):
         )
         return []
 
+    def audit_org_mfa(
+        self, max_pages: int = DEFAULT_MAX_PAGES
+    ) -> list[dict]:
+        """No-op on Bitbucket Cloud — workspace 2FA enforcement has no public REST API.
+
+        Bitbucket Cloud's workspace-level "Require two-step verification" setting
+        is a Premium-plan admin-UI control. There is no ``GET
+        /2.0/workspaces/{slug}/settings`` or equivalent endpoint that exposes the
+        two-step-verification enforcement flag to a recon-grade token; the setting
+        is not part of the public REST API that covenant can query.
+
+        To keep the cross-provider audit uniform, the method exists and returns
+        an empty list (the same normalized shape the GitHub and GitLab clients
+        would yield, just with no entries) and records a single non-fatal
+        ``warnings`` note so the operator understands the empty result reflects a
+        platform limitation, not a clean bill of health. Read-only — it makes no
+        request at all.
+        """
+        self.warnings.append(
+            "org-mfa audit is unsupported on Bitbucket Cloud "
+            "(the workspace two-step-verification enforcement flag is "
+            "admin-UI only and has no public REST endpoint a recon-grade "
+            "token can query); result is empty by design, not a clean "
+            "bill of health"
+        )
+        return []
+
     def enumerate_teams(self, max_pages: int = DEFAULT_MAX_PAGES) -> list[dict]:
         """No-op on Bitbucket Cloud — workspaces have no team/subgroup sub-unit.
 

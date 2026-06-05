@@ -1676,6 +1676,47 @@ class GitLabClient(BaseSCMClient):
         )
         return []
 
+    def audit_org_mfa(
+        self, max_pages: int = DEFAULT_MAX_PAGES
+    ) -> list[dict]:
+        """Audit whether each reachable GitLab group requires MFA for its members.
+
+        GitLab groups expose a ``require_two_factor_authentication`` field on
+        ``GET /api/v4/groups/{id}``. A group where this is ``false`` does NOT
+        mandate MFA: every member account is one phished or brute-forced
+        password away from full compromise of that group and all its projects.
+
+        Walks the groups from :meth:`enumerate_orgs` and, for each, GETs
+        ``/api/v4/groups/{id}`` (the per-group metadata endpoint). Returns a
+        normalized ``{"scope", "owner", "two_factor_required"}`` dict per
+        group. ``two_factor_required`` falls back to ``False`` when the field
+        is absent (older instances, free tier). A group whose endpoint answers
+        403/404 is skipped. Read-only; never changes any group setting.
+        """
+        results: list[dict] = []
+        for group in self.enumerate_orgs(max_pages=max_pages):
+            owner = group.get("name")
+            if not owner:
+                continue
+            try:
+                body = self._get(
+                    f"/api/v4/groups/{_group_id(owner)}"
+                ).json()
+            except SCMError:
+                continue
+            if not isinstance(body, dict):
+                continue
+            results.append(
+                {
+                    "scope": "group",
+                    "owner": owner,
+                    "two_factor_required": bool(
+                        body.get("require_two_factor_authentication", False)
+                    ),
+                }
+            )
+        return results
+
     def enumerate_members(self, max_pages: int = DEFAULT_MAX_PAGES) -> list[dict]:
         """List the other members of the groups this token can reach (lateral moves).
 
