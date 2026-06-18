@@ -44,3 +44,4 @@ covenant = ["py.typed"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra"
+markers = ["ship_gate: end-to-end wheel ship-gate (slow; gated)"]
