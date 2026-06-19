@@ -305,3 +305,31 @@ def test_fresh_venv_scope_guardrail_refuses_out_of_scope_target(fresh_venv_bin):
         f"no scope-refusal message found:\n"
         f"stderr={result.stderr!r}\nstdout={result.stdout!r}"
     )
+
+
+def test_top_level_version_flag_works(fresh_venv_bin):
+    """covenant --version at top level exits 0 and prints version string.
+
+    Without the fix, this errors with 'the following arguments are required:
+    {github,gitlab,bitbucket}' because --version was never wired into the
+    top-level parser (see covenant-002-wire-top-level-version-flag.md).
+    """
+    covenant_bin = fresh_venv_bin / "covenant"
+    assert covenant_bin.exists(), f"covenant entry-point not in {fresh_venv_bin}"
+    result = subprocess.run(
+        [str(covenant_bin), "--version"],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, (
+        f"covenant --version failed (exit {result.returncode}):\n"
+        f"stdout: {result.stdout!r}\nstderr: {result.stderr!r}"
+    )
+    assert "covenant 0.1.0" in result.stdout, (
+        f"expected 'covenant 0.1.0' in --version output, got: {result.stdout!r}"
+    )
+    # --version must NOT require a subcommand (the whole point of this test).
+    assert "{github,gitlab,bitbucket}" not in result.stderr, (
+        f"--version should not require a subcommand, got stderr: {result.stderr!r}"
+    )

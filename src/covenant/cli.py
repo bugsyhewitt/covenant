@@ -17,6 +17,7 @@ import json
 import os
 import sys
 
+from . import __version__
 from .scms import CLIENTS
 from .scms.base import DEFAULT_MAX_PAGES, HARD_MAX_PAGES, SCMError
 from .scope import Scope, ScopeError
@@ -171,6 +172,11 @@ def _build_parser() -> argparse.ArgumentParser:
             "Recon + token-validation toolkit for AUTHORIZED SCM bug-bounty "
             "engagements only. Operates strictly within --scope-file."
         ),
+    )
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"covenant {__version__}",
     )
     scm_subs = parser.add_subparsers(dest="scm", metavar="{github,gitlab,bitbucket}")
     scm_subs.required = True
