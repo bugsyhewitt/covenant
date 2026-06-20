@@ -326,10 +326,29 @@ def test_top_level_version_flag_works(fresh_venv_bin):
         f"covenant --version failed (exit {result.returncode}):\n"
         f"stdout: {result.stdout!r}\nstderr: {result.stderr!r}"
     )
-    assert "covenant 0.1.0" in result.stdout, (
-        f"expected 'covenant 0.1.0' in --version output, got: {result.stdout!r}"
+    assert "covenant 1.0.0" in result.stdout, (
+        f"expected 'covenant 1.0.0' in --version output, got: {result.stdout!r}"
     )
     # --version must NOT require a subcommand (the whole point of this test).
     assert "{github,gitlab,bitbucket}" not in result.stderr, (
         f"--version should not require a subcommand, got stderr: {result.stderr!r}"
+    )
+
+
+@pytest.mark.ship_gate
+def test_changelog_exists_with_v1_0_0_entry() -> None:
+    """CHANGELOG.md exists at repo root and contains a ## [1.0.0] entry.
+
+    Pins the v1.0 RELEASE contract: a CHANGELOG.md must exist and document
+    the v1.0.0 release cut. Any future release that forgets to update the
+    CHANGELOG (or accidentally reverts it) will fail this ship_gate test.
+    """
+    repo_root = pathlib.Path(__file__).resolve().parent.parent
+    changelog = repo_root / "CHANGELOG.md"
+    assert changelog.exists(), (
+        f"CHANGELOG.md missing from repo root: {repo_root}"
+    )
+    text = changelog.read_text(encoding="utf-8")
+    assert "## [1.0.0]" in text, (
+        f"CHANGELOG.md must contain a '## [1.0.0]' section header; got:\n{text[:500]!r}"
     )
