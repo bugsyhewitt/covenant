@@ -540,6 +540,7 @@ class BaseSCMClient:
         max_pages: int = DEFAULT_MAX_PAGES,
         extra_headers: dict | None = None,
         next_request: Callable[[httpx.Response], tuple[str, dict | None] | None],
+        skip_statuses: frozenset[int] = frozenset(),
     ):
         """Walk paginated GET responses, yielding one ``httpx.Response`` per page.
 
@@ -554,6 +555,13 @@ class BaseSCMClient:
         offers, so a misbehaving or hostile API can never make covenant walk
         forever. A ``max_pages`` of ``1`` fetches exactly one page — the
         pre-pagination behaviour.
+
+        When ``skip_statuses`` is provided, a response whose status code is in
+        that set causes the walk to stop cleanly (yielding nothing for that
+        page) without raising an error. This avoids a probe-then-paginate
+        pattern for endpoints that return 403/404 when a feature is disabled:
+        callers pass ``skip_statuses=frozenset({403, 404})`` and the walk
+        simply yields no pages rather than requiring a separate preflight GET.
 
         [Worker decision: pagination is a shared loop in base.py that delegates
         the SCM-specific "where's the next page?" parsing to a per-client
@@ -580,6 +588,8 @@ class BaseSCMClient:
                 url = f"{self.base_url}{next_path}"
             warnings_before = len(self.warnings)
             resp = self._request_with_retry(url, next_params, headers)
+            if resp.status_code in skip_statuses:
+                return
             if resp.status_code == 401:
                 raise SCMError("authentication failed (401) — check the token")
             if resp.status_code in _RATE_LIMIT_STATUSES and len(self.warnings) > warnings_before:

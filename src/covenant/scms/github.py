@@ -748,68 +748,63 @@ class GitHubClient(BaseSCMClient):
             owner = org.get("name")
             if not owner:
                 continue
-            try:
-                pages = list(
-                    self._get_paginated(
-                        f"/orgs/{owner}/actions/runners",
-                        params={"per_page": 100},
-                        max_pages=max_pages,
-                        next_request=_next_link,
-                    )
+            results.extend(
+                self._runners_for_path(
+                    f"/orgs/{owner}/actions/runners", "org", owner, max_pages
                 )
-            except SCMError:
-                continue
-            for resp in pages:
-                body = resp.json()
-                if not isinstance(body, dict):
-                    continue
-                for item in body.get("runners", []):
-                    runner_id = item.get("id")
-                    name = item.get("name")
-                    if runner_id is None or not name:
-                        continue
-                    results.append(
-                        {
-                            "scope": "org",
-                            "owner": owner,
-                            "id": runner_id,
-                            "name": name,
-                            "labels": _runner_labels(item.get("labels", [])),
-                            "self_hosted": True,
-                        }
-                    )
+            )
         for full_name in self._reachable_repos(max_pages=max_pages):
-            try:
-                pages = list(
-                    self._get_paginated(
-                        f"/repos/{full_name}/actions/runners",
-                        params={"per_page": 100},
-                        max_pages=max_pages,
-                        next_request=_next_link,
-                    )
+            results.extend(
+                self._runners_for_path(
+                    f"/repos/{full_name}/actions/runners", "repo", full_name, max_pages
                 )
-            except SCMError:
-                continue
-            for resp in pages:
-                body = resp.json()
-                if not isinstance(body, dict):
-                    continue
-                for item in body.get("runners", []):
-                    runner_id = item.get("id")
-                    name = item.get("name")
-                    if runner_id is None or not name:
-                        continue
-                    results.append(
-                        {
-                            "scope": "repo",
-                            "owner": full_name,
-                            "id": runner_id,
-                            "name": name,
-                            "labels": _runner_labels(item.get("labels", [])),
-                            "self_hosted": True,
-                        }
-                    )
+            )
         return results
+
+    def _runners_for_path(
+        self, path: str, scope: str, owner: str, max_pages: int
+    ) -> list[dict]:
+        """Fetch and normalize self-hosted runners from one API path.
+
+        Handles both org-scoped (``/orgs/{org}/actions/runners``) and
+        repo-scoped (``/repos/{full_name}/actions/runners``) paths. A token
+        that lacks the required scope gets a 403/404; we return an empty list
+        rather than propagating the error so the caller's walk continues to the
+        next scope target. ``self_hosted`` is always ``True`` for GitHub because
+        the runners API only lists self-hosted runners by definition.
+        """
+        try:
+            pages = list(
+                self._get_paginated(
+                    path,
+                    params={"per_page": 100},
+                    max_pages=max_pages,
+                    next_request=_next_link,
+                )
+            )
+        except SCMError:
+            return []
+        records: list[dict] = []
+        for resp in pages:
+            body = resp.json()
+            if not isinstance(body, dict):
+                continue
+            for item in body.get("runners", []):
+                runner_id = item.get("id")
+                name = item.get("name")
+                if runner_id is None or not name:
+                    continue
+                records.append(
+                    {
+                        "scope": scope,
+                        "owner": owner,
+                        "id": runner_id,
+                        "name": name,
+                        "labels": _runner_labels(item.get("labels", [])),
+                        "self_hosted": True,
+                    }
+                )
+        return records
 
     def audit_actions_environments(
         self, max_pages: int = DEFAULT_MAX_PAGES
@@ -1204,10 +1199,7 @@ class GitHubClient(BaseSCMClient):
         """
         results: list[dict] = []
         for full_name in self._reachable_repos(max_pages=max_pages):
-            for record in self._dependabot_alerts_for_repo(
-                full_name, max_pages=max_pages
-            ):
-                results.append(record)
+            results.extend(self._dependabot_alerts_for_repo(full_name, max_pages=max_pages))
         return results
 
     def _dependabot_alerts_for_repo(
@@ -1217,32 +1209,17 @@ class GitHubClient(BaseSCMClient):
 
         Dependabot alerts are only readable when the feature is enabled on the
         repo AND the token carries the ``security_events`` (or, for public repos,
-        ``public_repo``) scope; otherwise GitHub answers 403/404. We swallow those
-        two statuses for a single repo and return no alerts for it rather than
-        aborting the whole audit, so a token with mixed permissions still reports
-        every repo it CAN read.
+        ``public_repo``) scope; otherwise GitHub answers 403/404. We pass
+        ``skip_statuses={403, 404}`` to ``_get_paginated`` so those responses
+        simply yield no pages rather than requiring a separate preflight GET.
         """
         records: list[dict] = []
-        url = f"{self.base_url}/repos/{full_name}/dependabot/alerts"
-        probe = self._request_with_retry(
-            url, {"state": "open", "per_page": 100}, self._headers()
-        )
-        # A repo with Dependabot disabled, or a token without the
-        # security_events scope, yields 403/404 — skip it, do not fail the run.
-        if probe.status_code in (403, 404):
-            return records
-        if probe.status_code == 401:
-            raise SCMError("authentication failed (401) — check the token")
-        if probe.status_code >= 400:
-            raise SCMError(
-                f"{self.base_url} returned HTTP {probe.status_code} "
-                f"for {full_name} dependabot alerts"
-            )
         for resp in self._get_paginated(
             f"/repos/{full_name}/dependabot/alerts",
             params={"state": "open", "per_page": 100},
             max_pages=max_pages,
             next_request=_next_link,
+            skip_statuses=frozenset({403, 404}),
         ):
             body = resp.json()
             if not isinstance(body, list):
@@ -1316,10 +1293,7 @@ class GitHubClient(BaseSCMClient):
         """
         results: list[dict] = []
         for full_name in self._reachable_repos(max_pages=max_pages):
-            for record in self._secret_scanning_alerts_for_repo(
-                full_name, max_pages=max_pages
-            ):
-                results.append(record)
+            results.extend(self._secret_scanning_alerts_for_repo(full_name, max_pages=max_pages))
         return results
 
     def _secret_scanning_alerts_for_repo(
@@ -1329,32 +1303,17 @@ class GitHubClient(BaseSCMClient):
 
         Secret-scanning alerts are only readable when the feature is enabled on
         the repo AND the token carries the ``security_events`` (or, for public
-        repos, ``public_repo``) scope; otherwise GitHub answers 403/404. We
-        swallow those two statuses for a single repo and return no alerts for it
-        rather than aborting the whole audit, so a token with mixed permissions
-        still reports every repo it CAN read.
+        repos, ``public_repo``) scope; otherwise GitHub answers 403/404. We pass
+        ``skip_statuses={403, 404}`` to ``_get_paginated`` so those responses
+        simply yield no pages rather than requiring a separate preflight GET.
         """
         records: list[dict] = []
-        url = f"{self.base_url}/repos/{full_name}/secret-scanning/alerts"
-        probe = self._request_with_retry(
-            url, {"state": "open", "per_page": 100}, self._headers()
-        )
-        # A repo with secret scanning disabled, or a token without the
-        # security_events scope, yields 403/404 — skip it, do not fail the run.
-        if probe.status_code in (403, 404):
-            return records
-        if probe.status_code == 401:
-            raise SCMError("authentication failed (401) — check the token")
-        if probe.status_code >= 400:
-            raise SCMError(
-                f"{self.base_url} returned HTTP {probe.status_code} "
-                f"for {full_name} secret-scanning alerts"
-            )
         for resp in self._get_paginated(
             f"/repos/{full_name}/secret-scanning/alerts",
             params={"state": "open", "per_page": 100},
             max_pages=max_pages,
             next_request=_next_link,
+            skip_statuses=frozenset({403, 404}),
         ):
             body = resp.json()
             if not isinstance(body, list):
@@ -1417,10 +1376,7 @@ class GitHubClient(BaseSCMClient):
         """
         results: list[dict] = []
         for full_name in self._reachable_repos(max_pages=max_pages):
-            for record in self._code_scanning_alerts_for_repo(
-                full_name, max_pages=max_pages
-            ):
-                results.append(record)
+            results.extend(self._code_scanning_alerts_for_repo(full_name, max_pages=max_pages))
         return results
 
     def _code_scanning_alerts_for_repo(
@@ -1432,31 +1388,17 @@ class GitHubClient(BaseSCMClient):
         repo AND the token carries the ``security_events`` (or, for public repos,
         ``public_repo``) scope; otherwise GitHub answers 403/404. A repo on which
         code scanning has simply never run answers 404 with a ``"no analysis
-        found"`` message. We swallow those two statuses for a single repo and
-        return no alerts for it rather than aborting the whole audit, so a token
-        with mixed permissions still reports every repo it CAN read.
+        found"`` message. We pass ``skip_statuses={403, 404}`` to
+        ``_get_paginated`` so those responses simply yield no pages rather than
+        requiring a separate preflight GET.
         """
         records: list[dict] = []
-        url = f"{self.base_url}/repos/{full_name}/code-scanning/alerts"
-        probe = self._request_with_retry(
-            url, {"state": "open", "per_page": 100}, self._headers()
-        )
-        # A repo with code scanning disabled, never-run, or a token without the
-        # security_events scope yields 403/404 — skip it, do not fail the run.
-        if probe.status_code in (403, 404):
-            return records
-        if probe.status_code == 401:
-            raise SCMError("authentication failed (401) — check the token")
-        if probe.status_code >= 400:
-            raise SCMError(
-                f"{self.base_url} returned HTTP {probe.status_code} "
-                f"for {full_name} code-scanning alerts"
-            )
         for resp in self._get_paginated(
             f"/repos/{full_name}/code-scanning/alerts",
             params={"state": "open", "per_page": 100},
             max_pages=max_pages,
             next_request=_next_link,
+            skip_statuses=frozenset({403, 404}),
         ):
             body = resp.json()
             if not isinstance(body, list):
@@ -1526,10 +1468,7 @@ class GitHubClient(BaseSCMClient):
         """
         results: list[dict] = []
         for full_name in self._reachable_repos(max_pages=max_pages):
-            for record in self._advisory_alerts_for_repo(
-                full_name, max_pages=max_pages
-            ):
-                results.append(record)
+            results.extend(self._advisory_alerts_for_repo(full_name, max_pages=max_pages))
         return results
 
     def _advisory_alerts_for_repo(
@@ -1539,31 +1478,17 @@ class GitHubClient(BaseSCMClient):
 
         Repository advisories are only readable when the token carries the scope
         the endpoint requires; a repo with no advisories or out of the token's
-        reach answers 403/404. We swallow those statuses for a single repo and
-        return no advisories for it rather than aborting the whole audit, so a
-        token with mixed permissions still reports every repo it CAN read.
+        reach answers 403/404. We pass ``skip_statuses={403, 404}`` to
+        ``_get_paginated`` so those responses simply yield no pages rather than
+        requiring a separate preflight GET.
         """
         records: list[dict] = []
-        url = f"{self.base_url}/repos/{full_name}/security-advisories"
-        probe = self._request_with_retry(
-            url, {"state": "published", "per_page": 100}, self._headers()
-        )
-        # A repo with no advisories, the feature unavailable, or a token without
-        # the required scope yields 403/404 — skip it, do not fail the run.
-        if probe.status_code in (403, 404):
-            return records
-        if probe.status_code == 401:
-            raise SCMError("authentication failed (401) — check the token")
-        if probe.status_code >= 400:
-            raise SCMError(
-                f"{self.base_url} returned HTTP {probe.status_code} "
-                f"for {full_name} repository advisories"
-            )
         for resp in self._get_paginated(
             f"/repos/{full_name}/security-advisories",
             params={"state": "published", "per_page": 100},
             max_pages=max_pages,
             next_request=_next_link,
+            skip_statuses=frozenset({403, 404}),
         ):
             body = resp.json()
             if not isinstance(body, list):
@@ -2052,6 +1977,22 @@ class GitHubClient(BaseSCMClient):
             ),
         }
 
+    def _org_metadata(self, owner: str) -> dict | None:
+        """Fetch ``GET /orgs/{owner}`` and return the parsed body, or ``None``.
+
+        Both :meth:`audit_ip_allowlist` and :meth:`audit_org_mfa` read fields
+        from the same per-org metadata response. This helper centralizes the
+        call and the 403/404/SCMError guard so neither method duplicates the
+        ``try: self._get(...).json() except SCMError: continue`` boilerplate.
+        Returns ``None`` when the org is not accessible, letting the caller
+        skip cleanly.
+        """
+        try:
+            body = self._get(f"/orgs/{owner}").json()
+        except SCMError:
+            return None
+        return body if isinstance(body, dict) else None
+
     def audit_ip_allowlist(
         self, max_pages: int = DEFAULT_MAX_PAGES
     ) -> list[dict]:
@@ -2103,11 +2044,8 @@ class GitHubClient(BaseSCMClient):
             owner = org.get("name")
             if not owner:
                 continue
-            try:
-                body = self._get(f"/orgs/{owner}").json()
-            except SCMError:
-                continue
-            if not isinstance(body, dict):
+            body = self._org_metadata(owner)
+            if body is None:
                 continue
             results.append(
                 {
@@ -2162,11 +2100,8 @@ class GitHubClient(BaseSCMClient):
             owner = org.get("name")
             if not owner:
                 continue
-            try:
-                body = self._get(f"/orgs/{owner}").json()
-            except SCMError:
-                continue
-            if not isinstance(body, dict):
+            body = self._org_metadata(owner)
+            if body is None:
                 continue
             results.append(
                 {
