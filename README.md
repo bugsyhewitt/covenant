@@ -1,5 +1,9 @@
 # covenant
 
+<p align="center">
+  <img src="https://raw.githubusercontent.com/bugsyhewitt/bugsyhewitt.github.io/main/public/cards/covenant.jpg" alt="covenant" width="680">
+</p>
+
 Linux-native Python recon + token-validation toolkit for **authorized** SCM
 bug-bounty engagements. Targets GitHub (cloud), GitLab (cloud + self-hosted),
 and Bitbucket Cloud.
