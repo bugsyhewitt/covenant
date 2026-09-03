@@ -41,6 +41,13 @@ where = ["src"]
 [tool.setuptools.package-data]
 covenant = ["py.typed"]
 
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra"

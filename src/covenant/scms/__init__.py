@@ -10,9 +10,9 @@ configurable base URL so the live and mock paths are identical:
 Normalized repo/code dicts always carry ``name``, ``visibility`` and ``url``.
 """
 
+from .bitbucket import BitbucketClient
 from .github import GitHubClient
 from .gitlab import GitLabClient
-from .bitbucket import BitbucketClient
 
 CLIENTS = {
     "github": GitHubClient,

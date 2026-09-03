@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-import httpx
-
 import base64
+
+import httpx
 
 from ..tokens import classify_token
 from .base import (
