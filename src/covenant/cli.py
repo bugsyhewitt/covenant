@@ -114,7 +114,7 @@ def _add_org_arg(parser: argparse.ArgumentParser, scm: str) -> None:
 
 # Lazy import guard: secrets module requires the optional 'scan' extra.
 def _get_scan_fragments():  # noqa: ANN201
-    from .secrets import scan_fragments, SecretScanUnavailable  # noqa: PLC0415
+    from .secrets import SecretScanUnavailable, scan_fragments  # noqa: PLC0415
     return scan_fragments, SecretScanUnavailable
 
 
