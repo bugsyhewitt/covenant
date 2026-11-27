@@ -99,7 +99,8 @@ def scan_fragments(
 
     Returns a flat list of finding dicts (one per match across all fragments).
     Each dict has keys: ``rule_id``, ``description``, ``secret``,
-    ``start``, ``end``, ``fragment_index``.
+    ``start``, ``end``, ``fragment_index``, ``secret_type``, ``severity``,
+    ``confidence``, ``entropy``.
 
     By default the ``secret`` field is redacted to a share-safe fingerprint
     (see :func:`redact`) so covenant's own output never becomes a new place a
@@ -123,12 +124,20 @@ def scan_fragments(
             "pip install 'covenant[scan]'"
         ) from exc
 
+    from .classifier import classify_secret  # noqa: PLC0415
+
     results: list[dict] = []
     for idx, fragment in enumerate(fragments):
         for m in match(fragment, pattern_set=pattern_set):
             d = m.to_dict()
             d["fragment_index"] = idx
+            raw_secret = d.get("secret", "")
+            classification = classify_secret(raw_secret)
+            d["secret_type"] = classification.secret_type.value
+            d["severity"] = classification.severity
+            d["confidence"] = classification.confidence
+            d["entropy"] = round(classification.entropy, 4)
             if not reveal:
-                d["secret"] = redact(d.get("secret", ""))
+                d["secret"] = redact(raw_secret)
             results.append(d)
     return results
